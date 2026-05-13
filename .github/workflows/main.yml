@@ -24,55 +24,33 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
         run: |
           import os, requests, subprocess, re, asyncio
-          from telethon import TelegramClient, functions
+          from telethon import TelegramClient
           from telethon.sessions import StringSession
 
           token = "${{ github.event.client_payload.token }}"
-          file_id = "${{ github.event.client_payload.file_id }}"
           chat_id = int("${{ github.event.client_payload.chat_id }}")
           time_data = r"""${{ github.event.client_payload.start }}"""
 
           async def main():
-              input_file = "downloaded_audio"
+              input_file = None
               client = TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
 
-              # 1. محاولة التحميل عبر البوت
-              res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+              print("Searching for the most recent media file before time message...")
               
-              if res.get('ok'):
-                  print("Downloading via Bot API...")
-                  file_path = res['result']['file_path']
-                  ext = file_path.split('.')[-1]
-                  input_file = f"in.{ext}"
-                  with open(input_file, "wb") as f:
-                      f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
-              else:
-                  # 2. التحميل بالحساب الشخصي بطريقة البحث عن الرسالة
-                  print("File too large for Bot. Searching for message in chat...")
-                  try:
-                      # البحث عن الملف في آخر 50 رسالة في المحادثة لضمان الوصول إليه
-                      found = False
-                      async for message in client.iter_messages(chat_id, limit=50):
-                          if message.media and not isinstance(message.media, str):
-                              # التحقق من تطابق الملف (حتى لو لم يتطابق الـ id، سنأخذ آخر ملف وسائط)
-                              input_file = await message.download_media()
-                              if input_file:
-                                  print(f"File downloaded via search: {input_file}")
-                                  found = True
-                                  break
-                      if not found:
-                          print("Could not find the file in the recent messages.")
-                          return
-                  except Exception as e:
-                      print(f"Error during User Session download: {e}")
-                      return
-
-              if not input_file or not os.path.exists(input_file):
-                  print("Error: Input file was not created.")
+              # البحث في آخر 50 رسالة للعثور على أقرب ملف وسائط
+              async for message in client.iter_messages(chat_id, limit=50):
+                  if message.media:
+                      # وجدنا الملف الأخير قبل التواقيت
+                      input_file = await message.download_media()
+                      print(f"Found and downloaded media: {input_file}")
+                      break
+                  
+              if not input_file:
+                  print("No media file found in recent history.")
                   return
 
-              # 3. تحليل المواقيت وقص المقاطع
+              # تحليل المواقيت وقص المقاطع
               time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
 
               for i, (start_str, end_str) in enumerate(time_pairs):
@@ -95,7 +73,6 @@ jobs:
                       ], check=True)
 
                       await client.send_file(chat_id, output_file, voice_note=True)
-                      print(f"Segment {i} sent successfully.")
                       
                   except Exception as e:
                       print(f"Error processing segment {i}: {e}")
