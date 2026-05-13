@@ -1,4 +1,4 @@
-name: Lightning Fast MP3 Cutter
+name: Python Fast Cut
 
 on:
   repository_dispatch:
@@ -8,35 +8,50 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Instant Install
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Requirements
+        run: pip install pydub requests
+
+      - name: Run Cutter
+        shell: python
         run: |
-          # تثبيت SoX فقط لدعم الصيغ القياسية (MP3, WAV)
-          sudo apt-get install -y sox libsox-fmt-mp3 bc
+          import os, requests
+          from pydub import AudioSegment
 
-      - name: Process Audio
-        run: |
-          TOKEN="${{ github.event.client_payload.token }}"
-          FILE_ID="${{ github.event.client_payload.file_id }}"
-          CHAT_ID="${{ github.event.client_payload.chat_id }}"
-          START="${{ github.event.client_payload.start }}"
-          END="${{ github.event.client_payload.end }}"
+          # هنا تكمن السرعة: الإشارة للملف الموجود في الـ Root مباشرة
+          # سنفترض أنك رفعت ملف 'sox' لمستودعك
+          AudioSegment.converter = os.path.abspath("sox") 
 
-          # 1. جلب وتحميل الملف بسرعة
-          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
-          EXT="${FILE_PATH##*.}"
-          curl -sL -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          token = "${{ github.event.client_payload.token }}"
+          file_id = "${{ github.event.client_payload.file_id }}"
+          chat_id = "${{ github.event.client_payload.chat_id }}"
+          start = "${{ github.event.client_payload.start }}"
+          end = "${{ github.event.client_payload.end }}"
 
-          # 2. حساب المدة بالثواني
-          S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          DURATION=$(echo "$E_SEC - $S_SEC" | bc)
+          # جلب وتحميل
+          resp = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+          path = resp['result']['file_path']
+          ext = path.split('.')[-1]
+          
+          with open(f"in.{ext}", "wb") as f:
+              f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{path}").content)
 
-          # 3. القص المباشر بـ SoX
-          if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION; then
-             # 4. الإرسال الفوري عند النجاح
-             curl -s -F chat_id="$CHAT_ID" -F audio="@out.$EXT" "https://api.telegram.org/bot$TOKEN/sendAudio"
-          else
-             # إرسال تنبيه في حال كانت الصيغة غير مدعومة (مثل Opus)
-             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-                  -d "chat_id=$CHAT_ID&text=❌ هذا النوع من الملفات غير مدعوم حالياً."
-          fi
+          # تحويل الوقت لـ ميللي ثانية
+          def to_ms(t):
+              p = list(map(int, t.split(':')))
+              return (p[0]*3600 + p[1]*60 + p[2])*1000 if len(p)==3 else (p[0]*60 + p[1])*1000
+
+          # القص والإرسال
+          audio = AudioSegment.from_file(f"in.{ext}")
+          audio[to_ms(start):to_ms(end)].export(f"out.{ext}", format=ext)
+
+          with open(f"out.{ext}", 'rb') as f:
+              requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
+                            data={'chat_id': chat_id}, files={'audio': f})
