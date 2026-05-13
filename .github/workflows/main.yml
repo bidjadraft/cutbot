@@ -1,0 +1,23 @@
+name: Audio Cutter Engine
+on:
+  repository_dispatch:
+    types: [cut_audio]
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg curl jq
+      - name: Execute
+        env:
+          TOKEN: "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
+          CID: ${{ github.event.client_payload.chat_id }}
+          FID: ${{ github.event.client_payload.file_id }}
+          SS: ${{ github.event.client_payload.start }}
+          TO: ${{ github.event.client_payload.end }}
+        run: |
+          PATH_JSON=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FID")
+          FILE_PATH=$(echo $PATH_JSON | jq -r '.result.file_path')
+          curl -o input_file "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          ffmpeg -ss $SS -to $TO -i input_file -c:a libmp3lame -q:a 2 output.mp3
+          curl -F "chat_id=$CID" -F "audio=@output.mp3" -F "caption=Done: $SS to $TO" "https://api.telegram.org/bot$TOKEN/sendAudio"
