@@ -8,16 +8,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Generate and Send
-        env:
-          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           pip install -q requests
           python3 -c "
           import requests
-          url_gen = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ env.GEMINI_KEY }}'
+          url_gen = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyDSxcjN3cTSNEn_YHXZe9_b5XYWaXLOc5c'
           payload = {'contents': [{'parts': [{'text': 'أعطني ذكر واحد من أذكار الصباح باختصار'}]}]}
           res = requests.post(url_gen, json=payload).json()
-          msg = res['candidates'][0]['content']['parts'][0]['text']
-          url_tg = 'https://api.telegram.org/bot8588363876:AAHPhFdmViDpqgGoYDY03ZmBIDogh445xxw/sendMessage'
-          requests.post(url_tg, data={'chat_id': '1693067897', 'text': msg})
+          if 'candidates' in res:
+              msg = res['candidates'][0]['content']['parts'][0]['text']
+              url_tg = 'https://api.telegram.org/bot8588363876:AAHPhFdmViDpqgGoYDY03ZmBIDogh445xxw/sendMessage'
+              requests.post(url_tg, data={'chat_id': '1693067897', 'text': msg})
+          else:
+              print(res)
           "
