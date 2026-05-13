@@ -1,4 +1,4 @@
-name: Fast Audio Cutter (SoX)
+name: Ultra Light Audio Cutter
 
 on:
   repository_dispatch:
@@ -8,34 +8,32 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Install SoX
-        run: sudo apt-get update && sudo apt-get install -y sox libsox-fmt-all
-
-      - name: Process Audio with SoX
+      - name: Install Libav (avconv)
         run: |
-          # 1. الحصول على مسار الملف
+          sudo apt-get update
+          sudo apt-get install -y libav-tools jq bc
+
+      - name: Process Audio
+        run: |
           TOKEN="${{ github.event.client_payload.token }}"
           FILE_ID="${{ github.event.client_payload.file_id }}"
           CHAT_ID="${{ github.event.client_payload.chat_id }}"
           START="${{ github.event.client_payload.start }}"
           END="${{ github.event.client_payload.end }}"
 
+          # 1. جلب مسار الملف
           FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
+          EXT="${FILE_PATH##*.}"
           
           # 2. تحميل الملف
-          curl -L -o input_file "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          curl -L -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
           
-          # 3. حساب المدة (SoX يحتاج البداية والمدة، وليس البداية والنهاية)
-          # سنقوم بتحويل التوقيت (HH:MM:SS) إلى ثوانٍ للقص الدقيق
-          S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          DURATION=$(echo "$E_SEC - $S_SEC" | bc)
+          # 3. القص باستخدام avconv (أداة خفيفة وشاملة)
+          # خيار -c copy يضمن السرعة اللحظية وعدم فقدان الجودة
+          avconv -i "in.$EXT" -ss "$START" -to "$END" -c copy "out.$EXT"
 
-          # 4. القص باستخدام SoX (سريع جداً)
-          sox input_file output_audio.mp3 trim $S_SEC $DURATION
-
-          # 5. إرسال الملف الناتج
+          # 4. الإرسال
           curl -F chat_id="$CHAT_ID" \
-               -F audio="@output_audio.mp3" \
-               -F caption="✅ تم القص بواسطة SoX بسرعة فائقة!" \
+               -F audio="@out.$EXT" \
+               -F caption="✅ تم القص بواسطة avconv الخفيفة" \
                "https://api.telegram.org/bot$TOKEN/sendAudio"
