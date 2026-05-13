@@ -27,42 +27,37 @@ jobs:
           from telethon import TelegramClient
           from telethon.sessions import StringSession
 
-          # هذه القيم تأتي من الطلب الذي أرسله البوت
           chat_id = int("${{ github.event.client_payload.chat_id }}")
           time_data = r"""${{ github.event.client_payload.start }}"""
-
+          # سنستخدم معرف الرسالة (إذا توفر) أو نبحث عما قبل رسالة التواقيت
+          
           async def main():
-              input_file = None
               client = TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
-
-              # التحقق من أننا في المحادثة الصحيحة وليس Saved Messages
-              print(f"Searching in Chat ID: {chat_id}")
               
-              target_found = False
-              async for message in client.iter_messages(chat_id, limit=50):
-                  # البحث عن صوت أو بصمة صوتية أو ملف صوتي
-                  if message.audio or message.voice or (message.file and message.file.mime_type and 'audio' in message.file.mime_type):
-                      print(f"Found Audio in message {message.id}. Downloading...")
+              input_file = None
+              print(f"Searching for the large file in chat: {chat_id}")
+
+              # البحث عن أقرب ملف صوتي أُرسل "قبل" رسالة التواقيت
+              # نتحقق من آخر 20 رسالة لضمان الدقة
+              async for message in client.iter_messages(chat_id, limit=20):
+                  if message.audio or message.voice or (message.document and message.file and 'audio' in (message.file.mime_type or '')):
+                      print(f"Found the large file (ID: {message.id}). Downloading now...")
                       input_file = await message.download_media()
-                      target_found = True
                       break
               
-              if not target_found:
-                  print("Could not find any audio file in this chat.")
+              if not input_file:
+                  print("Error: Could not find any audio file to cut.")
                   await client.disconnect()
                   return
 
-              # تحليل المواقيت وقص المقاطع
+              # معالجة القص
               time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
-
               for i, (start_str, end_str) in enumerate(time_pairs):
                   try:
                       def get_sec(t):
                           p = list(map(int, t.split(':')))
-                          if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
-                          if len(p) == 2: return p[0]*60 + p[1]
-                          return p[0]
+                          return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
 
                       start_sec, end_sec = get_sec(start_str), get_sec(end_str)
                       duration = end_sec - start_sec
@@ -75,12 +70,10 @@ jobs:
                           "-ar", "48000", "-ac", "1", output_file
                       ], check=True)
 
-                      # إرسال النتيجة لنفس المحادثة
                       await client.send_file(chat_id, output_file, voice_note=True)
                       print(f"Segment {i} sent successfully.")
-                      
                   except Exception as e:
-                      print(f"Error processing segment {i}: {e}")
+                      print(f"Failed to process segment {i}: {e}")
               
               await client.disconnect()
 
