@@ -1,4 +1,4 @@
-name: Ultra Light Audio Cutter
+name: Smart Hybrid Cutter (SoX + FFmpeg)
 
 on:
   repository_dispatch:
@@ -8,12 +8,12 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Libav (avconv)
+      - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libav-tools jq bc
+          sudo apt-get install -y sox libsox-fmt-all ffmpeg jq bc
 
-      - name: Process Audio
+      - name: Hybrid Process
         run: |
           TOKEN="${{ github.event.client_payload.token }}"
           FILE_ID="${{ github.event.client_payload.file_id }}"
@@ -21,19 +21,29 @@ jobs:
           START="${{ github.event.client_payload.start }}"
           END="${{ github.event.client_payload.end }}"
 
-          # 1. جلب مسار الملف
+          # 1. جلب الملف
           FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
           EXT="${FILE_PATH##*.}"
-          
-          # 2. تحميل الملف
           curl -L -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
-          
-          # 3. القص باستخدام avconv (أداة خفيفة وشاملة)
-          # خيار -c copy يضمن السرعة اللحظية وعدم فقدان الجودة
-          avconv -i "in.$EXT" -ss "$START" -to "$END" -c copy "out.$EXT"
 
-          # 4. الإرسال
+          # 2. حساب المدة لـ SoX
+          S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
+          E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
+          DURATION=$(echo "$E_SEC - $S_SEC" | bc)
+
+          # 3. محاولة القص بـ SoX (الخيار الأول)
+          echo "Trying SoX..."
+          if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION 2>/dev/null; then
+             MSG="✅ تم القص بواسطة SoX (الأسرع)"
+          else
+             # 4. الخطة البديلة: FFmpeg (أشهر وأخف عند استخدام -c copy)
+             echo "SoX failed or format not supported. Switching to FFmpeg..."
+             ffmpeg -i "in.$EXT" -ss "$START" -to "$END" -c copy "out.$EXT"
+             MSG="✅ تم القص بواسطة FFmpeg (الخيار البديل)"
+          fi
+
+          # 5. الإرسال
           curl -F chat_id="$CHAT_ID" \
                -F audio="@out.$EXT" \
-               -F caption="✅ تم القص بواسطة avconv الخفيفة" \
+               -F caption="$MSG" \
                "https://api.telegram.org/bot$TOKEN/sendAudio"
