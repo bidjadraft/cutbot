@@ -1,4 +1,4 @@
-name: Ultra Fast Hybrid Cutter
+name: Lightning Fast MP3 Cutter
 
 on:
   repository_dispatch:
@@ -8,12 +8,12 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Quick Install
+      - name: Instant Install
         run: |
-          # تثبيت مباشر بدون تحديث المستودعات لتوفير الوقت
-          sudo apt-get install -y sox libsox-fmt-all opus-tools bc
+          # تثبيت SoX فقط لدعم الصيغ القياسية (MP3, WAV)
+          sudo apt-get install -y sox libsox-fmt-mp3 bc
 
-      - name: Smart Process
+      - name: Process Audio
         run: |
           TOKEN="${{ github.event.client_payload.token }}"
           FILE_ID="${{ github.event.client_payload.file_id }}"
@@ -21,28 +21,22 @@ jobs:
           START="${{ github.event.client_payload.start }}"
           END="${{ github.event.client_payload.end }}"
 
-          # 1. جلب بيانات الملف
-          FILE_INFO=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID")
-          FILE_PATH=$(echo $FILE_INFO | jq -r .result.file_path)
+          # 1. جلب وتحميل الملف بسرعة
+          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
           EXT="${FILE_PATH##*.}"
           curl -sL -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
 
-          # 2. حساب الثواني والمدة
+          # 2. حساب المدة بالثواني
           S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
           E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
           DURATION=$(echo "$E_SEC - $S_SEC" | bc)
 
-          # 3. محاولة القص بـ SoX أولاً ثم Opus-Tools كبديل
-          SUCCESS=false
-          if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION 2>/dev/null; then
-             SUCCESS=true
-          elif [[ "$EXT" == "opus" || "$EXT" == "ogg" ]]; then
-             opusdec "in.$EXT" --force-wav - 2>/dev/null | sox -t wav - "out.$EXT" trim $S_SEC $DURATION 2>/dev/null && SUCCESS=true
-          fi
-
-          # 4. الإرسال
-          if [ "$SUCCESS" = true ]; then
+          # 3. القص المباشر بـ SoX
+          if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION; then
+             # 4. الإرسال الفوري عند النجاح
              curl -s -F chat_id="$CHAT_ID" -F audio="@out.$EXT" "https://api.telegram.org/bot$TOKEN/sendAudio"
           else
-             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$CHAT_ID&text=❌ فشل القص"
+             # إرسال تنبيه في حال كانت الصيغة غير مدعومة (مثل Opus)
+             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                  -d "chat_id=$CHAT_ID&text=❌ هذا النوع من الملفات غير مدعوم حالياً."
           fi
