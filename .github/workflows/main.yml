@@ -1,4 +1,44 @@
-name: Fast Pydub (No Install)
+name: Super Light Fast Cut
+
+on:
+  repository_dispatch:
+    types: [cut_audio]
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Quick Setup
+        run: |
+          # تحميل نسخة Static مصغرة جداً (تؤدي غرض القص فقط)
+          wget https://github.com/eugeneware/ffmpeg-static/releases/latest/download/linux-x64 -O ffmpeg
+          chmod +x ffmpeg
+          sudo apt-get install -y jq  # مثبت مسبقاً عادة لكن للضمان
+
+      - name: Process Audio
+        run: |
+          TOKEN="${{ github.event.client_payload.token }}"
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          CHAT_ID="${{ github.event.client_payload.chat_id }}"
+          START="${{ github.event.client_payload.start }}"
+          END="${{ github.event.client_payload.end }}"
+
+          # 1. جلب رابط الملف بسرعة
+          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
+          EXT="${FILE_PATH##*.}"
+          
+          # 2. تحميل الملف
+          curl -L -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          
+          # 3. القص المباشر (Stream Copy) - أسرع عملية ممكنة برمجياً
+          # خيار -c copy يجعل الأداة تقص البايتات فقط دون معالجة الصوت
+          ./ffmpeg -i "in.$EXT" -ss "$START" -to "$END" -c copy "out.$EXT"
+
+          # 4. الإرسال الفوري
+          curl -F chat_id="$CHAT_ID" \
+               -F audio="@out.$EXT" \
+               -F caption="✅ تم القص بسرعة فائقة" \
+               "https://api.telegram.org/bot$TOKEN/sendAudio"name: Fast Pydub (No Install)
 
 on:
   repository_dispatch:
