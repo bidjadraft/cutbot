@@ -27,53 +27,62 @@ jobs:
           from telethon import TelegramClient
           from telethon.sessions import StringSession
 
+          token = "${{ github.event.client_payload.token }}"
           chat_id = int("${{ github.event.client_payload.chat_id }}")
           time_data = r"""${{ github.event.client_payload.start }}"""
-          # سنستخدم معرف الرسالة (إذا توفر) أو نبحث عما قبل رسالة التواقيت
-          
+
           async def main():
               client = TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
               
-              input_file = None
-              print(f"Searching for the large file in chat: {chat_id}")
+              input_file = "downloaded_audio"
+              found = False
 
-              # البحث عن أقرب ملف صوتي أُرسل "قبل" رسالة التواقيت
-              # نتحقق من آخر 20 رسالة لضمان الدقة
+              print(f"Searching for audio in chat: {chat_id}")
+
+              # البحث عن آخر رسالة صوتية (Audio/Voice) في المحادثة
               async for message in client.iter_messages(chat_id, limit=20):
                   if message.audio or message.voice or (message.document and message.file and 'audio' in (message.file.mime_type or '')):
-                      print(f"Found the large file (ID: {message.id}). Downloading now...")
+                      print(f"Found target message: {message.id}. Downloading...")
                       input_file = await message.download_media()
+                      found = True
                       break
               
-              if not input_file:
-                  print("Error: Could not find any audio file to cut.")
+              if not found:
+                  print("Error: Could not find any audio file in the last 20 messages.")
                   await client.disconnect()
                   return
 
-              # معالجة القص
+              # تحليل التواقيت (يدعم عدة تنسيقات مثل 01:20-02:20 أو أسطر منفصلة)
               time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
+
               for i, (start_str, end_str) in enumerate(time_pairs):
                   try:
                       def get_sec(t):
                           p = list(map(int, t.split(':')))
-                          return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
+                          if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
+                          if len(p) == 2: return p[0]*60 + p[1]
+                          return p[0]
 
-                      start_sec, end_sec = get_sec(start_str), get_sec(end_str)
+                      start_sec = get_sec(start_str)
+                      end_sec = get_sec(end_str)
                       duration = end_sec - start_sec
+                      
                       if duration <= 0: continue
 
                       output_file = f"voice_{i}.ogg"
+                      # استخدام إعدادات القص التي تضمن تحويلها لبصمة صوتية متوافقة
                       subprocess.run([
                           "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
                           "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
                           "-ar", "48000", "-ac", "1", output_file
                       ], check=True)
 
+                      # إرسال الملف كبصمة صوتية (Voice Note)
                       await client.send_file(chat_id, output_file, voice_note=True)
                       print(f"Segment {i} sent successfully.")
                   except Exception as e:
-                      print(f"Failed to process segment {i}: {e}")
+                      print(f"Error processing segment {i}: {e}")
               
               await client.disconnect()
 
