@@ -27,7 +27,7 @@ jobs:
           from telethon import TelegramClient
           from telethon.sessions import StringSession
 
-          token = "${{ github.event.client_payload.token }}"
+          # هذه القيم تأتي من الطلب الذي أرسله البوت
           chat_id = int("${{ github.event.client_payload.chat_id }}")
           time_data = r"""${{ github.event.client_payload.start }}"""
 
@@ -36,18 +36,21 @@ jobs:
               client = TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
 
-              print("Searching for the most recent media file before time message...")
+              # التحقق من أننا في المحادثة الصحيحة وليس Saved Messages
+              print(f"Searching in Chat ID: {chat_id}")
               
-              # البحث في آخر 50 رسالة للعثور على أقرب ملف وسائط
+              target_found = False
               async for message in client.iter_messages(chat_id, limit=50):
-                  if message.media:
-                      # وجدنا الملف الأخير قبل التواقيت
+                  # البحث عن صوت أو بصمة صوتية أو ملف صوتي
+                  if message.audio or message.voice or (message.file and message.file.mime_type and 'audio' in message.file.mime_type):
+                      print(f"Found Audio in message {message.id}. Downloading...")
                       input_file = await message.download_media()
-                      print(f"Found and downloaded media: {input_file}")
+                      target_found = True
                       break
-                  
-              if not input_file:
-                  print("No media file found in recent history.")
+              
+              if not target_found:
+                  print("Could not find any audio file in this chat.")
+                  await client.disconnect()
                   return
 
               # تحليل المواقيت وقص المقاطع
@@ -72,7 +75,9 @@ jobs:
                           "-ar", "48000", "-ac", "1", output_file
                       ], check=True)
 
+                      # إرسال النتيجة لنفس المحادثة
                       await client.send_file(chat_id, output_file, voice_note=True)
+                      print(f"Segment {i} sent successfully.")
                       
                   except Exception as e:
                       print(f"Error processing segment {i}: {e}")
