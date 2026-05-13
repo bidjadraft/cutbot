@@ -1,3 +1,21 @@
+name: Hybrid Audio Processor
+
+on:
+  repository_dispatch:
+    types: [cut_audio]
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Tools
+        run: |
+          wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          tar xf ffmpeg-release-amd64-static.tar.xz
+          mv ffmpeg-*-amd64-static/ffmpeg .
+          chmod +x ffmpeg
+          pip install telethon requests
+
       - name: Execute Download and Cut
         shell: python
         env:
@@ -21,14 +39,13 @@
               
               input_file = None
               
-              # التعديل: البحث عن أحدث رسالة تحتوي على ميديا فقط (Limit=1)
+              # جلب أحدث ملف فقط لتجنب معالجة الملفات القديمة
               if file_id == "large_file":
                   async for message in client.iter_messages(channel_id, limit=1):
                       if message.media:
                           input_file = await message.download_media()
                           break
               else:
-                  # البحث في محادثة المستخدم عن آخر ملف أرسله
                   async for message in client.iter_messages(chat_id, limit=5):
                       if message.media:
                           input_file = await message.download_media()
@@ -49,6 +66,7 @@
                   
                   subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(dur), "-i", input_file, "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "1", output])
                   
+                  # الإرسال عبر البوت مباشرة
                   with open(output, 'rb') as f:
                       requests.post(f"https://api.telegram.org/bot{bot_token}/sendVoice", data={"chat_id": chat_id}, files={"voice": f})
               
