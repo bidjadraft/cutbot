@@ -1,4 +1,4 @@
-name: Telegram Voice Note Cutter
+name: Pro Multi-Voice Note Cutter
 
 on:
   repository_dispatch:
@@ -16,45 +16,57 @@ jobs:
           chmod +x ffmpeg
           pip install requests
 
-      - name: Run Voice Note Converter
+      - name: Run Multi-Cutter Logic
         shell: python
         run: |
-          import os, requests, subprocess
+          import os, requests, subprocess, re
 
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
           chat_id = "${{ github.event.client_payload.chat_id }}"
-          start = "${{ github.event.client_payload.start }}"
-          end = "${{ github.event.client_payload.end }}"
+          # هنا نستلم النص الذي يحتوي على المواقيت (سواء سطر واحد أو عدة أسطر)
+          time_data = "${{ github.event.client_payload.start }}" 
 
-          # 1. تحميل الملف الأصلي
+          def get_seconds(t_str):
+              t_str = t_str.strip()
+              parts = list(map(int, t_str.split(':')))
+              if len(parts) == 3: return parts[0]*3600 + parts[1]*60 + parts[2]
+              if len(parts) == 2: return parts[0]*60 + parts[1]
+              return parts[0]
+
+          # 1. تحميل الملف الأصلي مرة واحدة فقط لتوفير الوقت
           res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
           file_path = res['result']['file_path']
           ext = file_path.split('.')[-1]
           input_file = f"in.{ext}"
-          output_file = "voice.ogg" # التحويل دائماً إلى ogg
-          
           with open(input_file, "wb") as f:
               f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-          # 2. القص والتحويل إلى ترميز Opus (بصمة تليجرام)
-          # الإعدادات: libopus، تردد 48k، قناة واحدة (mono)
-          cmd = [
-              "./ffmpeg", "-y", 
-              "-ss", start, 
-              "-to", end, 
-              "-i", input_file, 
-              "-c:a", "libopus", 
-              "-b:a", "64k", 
-              "-ar", "48000", 
-              "-ac", "1", 
-              output_file
-          ]
-          
-          subprocess.run(cmd, check=True)
+          # 2. تحليل النص لاستخراج فترات التوقيت
+          # هذا النمط يبحث عن (توقيت) ثم (فاصل - أو مسافة) ثم (توقيت)
+          time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
 
-          # 3. إرسالها كـ Voice Note (بصمة) وليس كملف صوتي عادي
-          with open(output_file, 'rb') as f:
-              # نستخدم sendVoice بدلاً من sendAudio لتظهر كبصمة
-              requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
-                            data={'chat_id': chat_id}, files={'voice': f})
+          # 3. معالجة كل فترة زمنية وقصها
+          for i, (start_str, end_str) in enumerate(time_pairs):
+              start_sec = get_seconds(start_str)
+              end_sec = get_seconds(end_str)
+              duration = end_sec - start_sec
+              
+              if duration <= 0: continue
+
+              output_file = f"voice_{i}.ogg"
+              
+              cmd = [
+                  "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
+                  "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
+                  "-ar", "48000", "-ac", "1", output_file
+              ]
+              
+              subprocess.run(cmd, check=True)
+
+              # 4. إرسال المقطع الناتج كبصمة
+              with open(output_file, 'rb') as f:
+                  requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
+                                data={'chat_id': chat_id}, files={'voice': f})
+              
+              print(f"Sent segment {i+1}: {start_str} to {end_str}")
