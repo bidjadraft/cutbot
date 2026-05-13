@@ -14,7 +14,7 @@ jobs:
           tar xf ffmpeg-release-amd64-static.tar.xz
           mv ffmpeg-*-amd64-static/ffmpeg .
           chmod +x ffmpeg
-          pip install telethon
+          pip install telethon requests
 
       - name: Execute Download and Cut
         shell: python
@@ -23,13 +23,15 @@ jobs:
           API_ID: 24629594
           API_HASH: a79fa760e65af09a85eb2cc97cb2263c
         run: |
-          import os, re, asyncio, subprocess
+          import os, re, asyncio, subprocess, requests
           from telethon import TelegramClient
           from telethon.sessions import StringSession
 
           chat_id = int("${{ github.event.client_payload.chat_id }}")
           file_id = "${{ github.event.client_payload.file_id }}"
           time_data = r"""${{ github.event.client_payload.start }}"""
+          # توكن البوت الذي سيتولى الإرسال
+          bot_token = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
           channel_id = -1003679940913
 
           async def main():
@@ -37,32 +39,25 @@ jobs:
               await client.connect()
               
               input_file = None
-              
-              # المنطق الصحيح للبحث عن الملف
               if file_id == "large_file":
-                  print(f"Searching in channel: {channel_id}")
                   async for message in client.iter_messages(channel_id, limit=10):
                       if message.media:
                           input_file = await message.download_media()
                           break
               else:
-                  print(f"Searching in chat: {chat_id}")
                   async for message in client.iter_messages(chat_id, limit=20):
                       if message.media:
                           input_file = await message.download_media()
                           break
 
               if not input_file:
-                  print("❌ Error: Could not find any audio file.")
                   return
 
               matches = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
               for i, (s, e) in enumerate(matches):
                   def to_sec(t):
                       p = list(map(int, t.split(':')))
-                      if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
-                      if len(p) == 2: return p[0]*60 + p[1]
-                      return p[0]
+                      return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
 
                   start = to_sec(s)
                   dur = to_sec(e) - start
@@ -74,8 +69,13 @@ jobs:
                       "-ar", "48000", "-ac", "1", output
                   ])
                   
-                  await client.send_file(chat_id, output, voice_note=True)
-                  print(f"Segment {i} sent successfully.")
+                  # تعديل: الإرسال عبر البوت بدلاً من الحساب الشخصي
+                  with open(output, 'rb') as f:
+                      requests.post(
+                          f"https://api.telegram.org/bot{bot_token}/sendVoice",
+                          data={"chat_id": chat_id},
+                          files={"voice": f}
+                      )
               
               await client.disconnect()
 
