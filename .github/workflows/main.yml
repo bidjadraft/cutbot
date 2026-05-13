@@ -1,4 +1,4 @@
-name: Hybrid Audio Cutter (SoX + Opus-Tools)
+name: Hybrid Audio Cutter (Fixed)
 
 on:
   repository_dispatch:
@@ -11,7 +11,7 @@ jobs:
       - name: Install Essential Tools
         run: |
           sudo apt-get update
-          # تثبيت SoX مع دعم MP3 و Opus-Tools كبديل متخصص
+          # تثبيت الأدوات مع مكتبات الدعم الكاملة
           sudo apt-get install -y sox libsox-fmt-all opus-tools jq bc
 
       - name: Smart Process
@@ -23,32 +23,43 @@ jobs:
           END="${{ github.event.client_payload.end }}"
 
           # 1. جلب وتحميل الملف
-          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
+          FILE_INFO=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID")
+          FILE_PATH=$(echo $FILE_INFO | jq -r .result.file_path)
           EXT="${FILE_PATH##*.}"
           curl -L -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
 
-          # 2. حساب التوقيت (بالثواني)
+          # 2. حساب التوقيت بالثواني
           S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
           E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
           DURATION=$(echo "$E_SEC - $S_SEC" | bc)
 
-          # 3. محاولة المعالجة
-          echo "Attempting to cut with SoX..."
+          # 3. محاولة المعالجة بذكاء
+          SUCCESS=false
+          
+          # المحاولة الأولى: SoX (للملفات العادية MP3/WAV)
           if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION 2>/dev/null; then
              MSG="✅ تم القص بواسطة SoX"
-          elif [[ "$EXT" == "opus" || "$EXT" == "ogg" ]]; then
-             echo "SoX failed. Switching to Opus-Tools..."
-             # فك تشفير -> قص -> إعادة تشفير (باستخدام opus-tools)
-             opusdec "in.$EXT" - | sox -t wav - "temp.wav" trim $S_SEC $DURATION
-             opusenc "temp.wav" "out.$EXT"
-             MSG="✅ تم القص بواسطة Opus-Tools (البديل المتخصص)"
-          else
-             MSG="❌ الصيغة غير مدعومة من الأدوات المختارة"
-             exit 1
+             SUCCESS=true
           fi
 
-          # 4. إرسال الملف
-          curl -F chat_id="$CHAT_ID" \
-               -F audio="@out.$EXT" \
-               -F caption="$MSG" \
-               "https://api.telegram.org/bot$TOKEN/sendAudio"
+          # المحاولة الثانية: Opus-Tools (إذا فشل SoX وكان الملف Opus/OGG)
+          if [ "$SUCCESS" = false ]; then
+             echo "Switching to Opus-Tools fallback..."
+             # فك التشفير إلى RAW ثم القص ثم إعادة التشفير
+             if opusdec "in.$EXT" --force-wav - | sox -t wav - "out.$EXT" trim $S_SEC $DURATION 2>/dev/null; then
+                MSG="✅ تم القص بواسطة Opus-Tools"
+                SUCCESS=true
+             fi
+          fi
+
+          # 4. إرسال النتيجة أو رسالة خطأ
+          if [ "$SUCCESS" = true ]; then
+             curl -F chat_id="$CHAT_ID" \
+                  -F audio="@out.$EXT" \
+                  -F caption="$MSG" \
+                  "https://api.telegram.org/bot$TOKEN/sendAudio"
+          else
+             curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+                  -d "chat_id=$CHAT_ID&text=❌ فشلت جميع الأدوات في معالجة هذا الملف."
+             exit 1
+          fi
