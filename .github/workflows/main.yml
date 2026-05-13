@@ -1,4 +1,4 @@
-name: Python Fast Cut
+name: Python FFmpeg Fast Cut
 
 on:
   repository_dispatch:
@@ -8,50 +8,54 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Quick Environment Setup
+        run: |
+          # تحميل نسخة FFmpeg Static بسرعة فائقة وتخطي التحديث
+          wget -q https://github.com/eugeneware/ffmpeg-static/releases/latest/download/linux-x64 -O ffmpeg
+          chmod +x ffmpeg
+          pip install pydub requests
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install Requirements
-        run: pip install pydub requests
-
-      - name: Run Cutter
+      - name: Run Python Cutter
         shell: python
         run: |
-          import os, requests
+          import os
+          import requests
           from pydub import AudioSegment
 
-          # هنا تكمن السرعة: الإشارة للملف الموجود في الـ Root مباشرة
-          # سنفترض أنك رفعت ملف 'sox' لمستودعك
-          AudioSegment.converter = os.path.abspath("sox") 
+          # توجيه Pydub لاستخدام الملف الذي حملناه للتو
+          AudioSegment.converter = os.path.abspath("ffmpeg")
 
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
           chat_id = "${{ github.event.client_payload.chat_id }}"
-          start = "${{ github.event.client_payload.start }}"
-          end = "${{ github.event.client_payload.end }}"
+          start_time = "${{ github.event.client_payload.start }}"
+          end_time = "${{ github.event.client_payload.end }}"
 
-          # جلب وتحميل
-          resp = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
-          path = resp['result']['file_path']
-          ext = path.split('.')[-1]
+          # 1. جلب رابط الملف وتحميله
+          res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+          file_path = res['result']['file_path']
+          ext = file_path.split('.')[-1]
           
           with open(f"in.{ext}", "wb") as f:
-              f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{path}").content)
+              f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-          # تحويل الوقت لـ ميللي ثانية
+          # دالة تحويل الوقت (HH:MM:SS أو MM:SS) إلى ميللي ثانية
           def to_ms(t):
-              p = list(map(int, t.split(':')))
-              return (p[0]*3600 + p[1]*60 + p[2])*1000 if len(p)==3 else (p[0]*60 + p[1])*1000
+              parts = list(map(int, t.split(':')))
+              if len(parts) == 3: return (parts[0]*3600 + parts[1]*60 + parts[2])*1000
+              if len(parts) == 2: return (parts[0]*60 + parts[1])*1000
+              return parts[0]*1000
 
-          # القص والإرسال
-          audio = AudioSegment.from_file(f"in.{ext}")
-          audio[to_ms(start):to_ms(end)].export(f"out.{ext}", format=ext)
+          # 2. معالجة الصوت بـ Pydub
+          try:
+              audio = AudioSegment.from_file(f"in.{ext}")
+              cut_audio = audio[to_ms(start_time):to_ms(end_time)]
+              cut_audio.export(f"out.{ext}", format=ext)
 
-          with open(f"out.{ext}", 'rb') as f:
-              requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
-                            data={'chat_id': chat_id}, files={'audio': f})
+              # 3. إرسال الملف الناتج
+              with open(f"out.{ext}", 'rb') as f:
+                  requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
+                                data={'chat_id': chat_id}, files={'audio': f})
+          except Exception as e:
+              requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
+                            data={'chat_id': chat_id, 'text': f"❌ خطأ: {str(e)}"})
