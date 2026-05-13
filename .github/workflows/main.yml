@@ -1,4 +1,4 @@
-name: Smart Hybrid Cutter (SoX + FFmpeg)
+name: Fast Pydub (No Install)
 
 on:
   repository_dispatch:
@@ -8,42 +8,59 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Tools
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Pydub
+        run: pip install pydub requests
+
+      - name: Download Static FFmpeg (Fast)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y sox libsox-fmt-all ffmpeg jq bc
+          # تحميل نسخة ثابتة صغيرة جداً لا تحتاج تثبيت
+          wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz
+          tar xvf ffmpeg-git-amd64-static.tar.xz
+          # نقل المحرك للمسار الحالي ليراه بايثون فوراً
+          mv ffmpeg-git-*-amd64-static/ffmpeg .
+          mv ffmpeg-git-*-amd64-static/ffprobe .
+          chmod +x ffmpeg ffprobe
 
-      - name: Hybrid Process
+      - name: Run Python Cutter
+        shell: python
         run: |
-          TOKEN="${{ github.event.client_payload.token }}"
-          FILE_ID="${{ github.event.client_payload.file_id }}"
-          CHAT_ID="${{ github.event.client_payload.chat_id }}"
-          START="${{ github.event.client_payload.start }}"
-          END="${{ github.event.client_payload.end }}"
+          import os
+          import requests
+          from pydub import AudioSegment
 
-          # 1. جلب الملف
-          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
-          EXT="${FILE_PATH##*.}"
-          curl -L -o "in.$EXT" "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          # تعريف مسار ffmpeg محلياً (بدون تثبيت في النظام)
+          AudioSegment.converter = os.path.abspath("ffmpeg")
+          AudioSegment.ffprobe   = os.path.abspath("ffprobe")
 
-          # 2. حساب المدة لـ SoX
-          S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
-          DURATION=$(echo "$E_SEC - $S_SEC" | bc)
+          token = "${{ github.event.client_payload.token }}"
+          file_id = "${{ github.event.client_payload.file_id }}"
+          chat_id = "${{ github.event.client_payload.chat_id }}"
+          start_time = "${{ github.event.client_payload.start }}"
+          end_time = "${{ github.event.client_payload.end }}"
 
-          # 3. محاولة القص بـ SoX (الخيار الأول)
-          echo "Trying SoX..."
-          if sox "in.$EXT" "out.$EXT" trim $S_SEC $DURATION 2>/dev/null; then
-             MSG="✅ تم القص بواسطة SoX (الأسرع)"
-          else
-             # 4. الخطة البديلة: FFmpeg (أشهر وأخف عند استخدام -c copy)
-             echo "SoX failed or format not supported. Switching to FFmpeg..."
-             ffmpeg -i "in.$EXT" -ss "$START" -to "$END" -c copy "out.$EXT"
-             MSG="✅ تم القص بواسطة FFmpeg (الخيار البديل)"
-          fi
+          # جلب الملف
+          file_info = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+          file_path = file_info['result']['file_path']
+          ext = file_path.split('.')[-1]
+          
+          with open(f"in.{ext}", "wb") as f:
+              f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-          # 5. الإرسال
-          curl -F chat_id="$CHAT_ID" \
-               -F audio="@out.$EXT" \
-               -F caption="$MSG" \
-               "https://api.telegram.org/bot$TOKEN/sendAudio"
+          def to_ms(t):
+              p = list(map(int, t.split(':')))
+              return (p[0]*3600 + p[1]*60 + p[2])*1000 if len(p)==3 else (p[0]*60 + p[1])*1000
+
+          # القص
+          audio = AudioSegment.from_file(f"in.{ext}")
+          audio[to_ms(start_time):to_ms(end_time)].export(f"out.{ext}", format=ext)
+
+          # الإرسال
+          with open(f"out.{ext}", 'rb') as f:
+              requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
+                            data={'chat_id': chat_id, 'caption': '🚀 قص سريع (بدون تثبيت نظام)'}, 
+                            files={'audio': f})
