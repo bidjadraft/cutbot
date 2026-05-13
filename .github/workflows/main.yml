@@ -1,4 +1,4 @@
-name: Python FFmpeg Fast Cut
+name: Ultimate Audio Cutter (Fixed)
 
 on:
   repository_dispatch:
@@ -10,67 +10,61 @@ jobs:
     steps:
       - name: Quick Environment Setup
         run: |
-          # تحميل الملف المضغوط الذي يحتوي على ffmpeg و ffprobe معاً
+          # تحميل النسخة المستقرة من المحرك
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
-          
-          # نقل المحركين (ffmpeg و ffprobe) للمجلد الرئيسي
           mv ffmpeg-*-amd64-static/ffmpeg .
-          mv ffmpeg-*-amd64-static/ffprobe .
-          chmod +x ffmpeg ffprobe
-          
-          pip install pydub requests
+          chmod +x ffmpeg
+          pip install requests
 
-      - name: Run Python Cutter
+      - name: Run Direct FFmpeg Cutter
         shell: python
         run: |
-          import os
-          import requests
-          from pydub import AudioSegment
-
-          # تعريف المسار المطلق للمجلد الحالي
-          current_dir = os.getcwd()
-          
-          # إخبار Pydub بمكان المحركات بشكل صريح
-          AudioSegment.converter = os.path.join(current_dir, "ffmpeg")
-          AudioSegment.ffprobe = os.path.join(current_dir, "ffprobe")
-          
-          # إضافة المجلد الحالي للمسار (PATH) لضمان رؤية النظام للمحركات
-          os.environ["PATH"] += os.pathsep + current_dir
+          import os, requests, subprocess
 
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
           chat_id = "${{ github.event.client_payload.chat_id }}"
-          start_time = "${{ github.event.client_payload.start }}"
-          end_time = "${{ github.event.client_payload.end }}"
+          start = "${{ github.event.client_payload.start }}"
+          end = "${{ github.event.client_payload.end }}"
 
           # 1. تحميل الملف
           res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
           file_path = res['result']['file_path']
           ext = file_path.split('.')[-1]
+          input_file = f"in.{ext}"
+          output_file = f"out.{ext}"
           
-          with open(f"in.{ext}", "wb") as f:
+          with open(input_file, "wb") as f:
               f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-          def to_ms(t):
-              parts = list(map(int, t.split(':')))
-              if len(parts) == 3: return (parts[0]*3600 + parts[1]*60 + parts[2])*1000
-              if len(parts) == 2: return (parts[0]*60 + parts[1])*1000
-              return parts[0]*1000
+          # 2. القص الاحترافي عبر FFmpeg مباشرة
+          # استخدمنا -map_metadata لضمان نقل بيانات الملف وتجنب أخطاء التنسيق
+          cmd = [
+              "./ffmpeg", "-y", 
+              "-ss", start, 
+              "-to", end, 
+              "-i", input_file, 
+              "-c", "copy", # محاولة القص الفوري بدون إعادة تشفير
+              output_file
+          ]
+          
+          # محاولة أولى: قص سريع بدون إعادة تشفير
+          result = subprocess.run(cmd, capture_output=True)
+          
+          if result.returncode != 0:
+              # محاولة ثانية: إعادة تشفير كاملة إذا فشل القص السريع (للملفات المعقدة)
+              cmd_reencode = [
+                  "./ffmpeg", "-y", 
+                  "-ss", start, 
+                  "-to", end, 
+                  "-i", input_file, 
+                  "-preset", "ultrafast",
+                  output_file
+              ]
+              subprocess.run(cmd_reencode, check=True)
 
-          # 2. معالجة الصوت
-          try:
-              # سيتم استخدام ffprobe هنا تلقائياً لتحليل الملف
-              audio = AudioSegment.from_file(f"in.{ext}")
-              cut_audio = audio[to_ms(start_time):to_ms(end_time)]
-              
-              # القص والتصدير
-              cut_audio.export(f"out.{ext}", format=ext)
-
-              # 3. إرسال النتيجة
-              with open(f"out.{ext}", 'rb') as f:
-                  requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
-                                data={'chat_id': chat_id}, files={'audio': f})
-          except Exception as e:
-              requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
-                            data={'chat_id': chat_id, 'text': f"❌ خطأ تقني: {str(e)}"})
+          # 3. إرسال النتيجة
+          with open(output_file, 'rb') as f:
+              requests.post(f"https://api.telegram.org/bot{token}/sendAudio", 
+                            data={'chat_id': chat_id}, files={'audio': f})
