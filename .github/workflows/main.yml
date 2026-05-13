@@ -1,23 +1,41 @@
-name: Audio Cutter Engine
+name: Fast Audio Cutter (SoX)
+
 on:
   repository_dispatch:
     types: [cut_audio]
+
 jobs:
-  process:
+  cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg curl jq
-      - name: Execute
-        env:
-          TOKEN: "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
-          CID: ${{ github.event.client_payload.chat_id }}
-          FID: ${{ github.event.client_payload.file_id }}
-          SS: ${{ github.event.client_payload.start }}
-          TO: ${{ github.event.client_payload.end }}
+      - name: Install SoX
+        run: sudo apt-get update && sudo apt-get install -y sox libsox-fmt-all
+
+      - name: Process Audio with SoX
         run: |
-          PATH_JSON=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FID")
-          FILE_PATH=$(echo $PATH_JSON | jq -r '.result.file_path')
-          curl -o input_file "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
-          ffmpeg -ss $SS -to $TO -i input_file -c:a libmp3lame -q:a 2 output.mp3
-          curl -F "chat_id=$CID" -F "audio=@output.mp3" -F "caption=Done: $SS to $TO" "https://api.telegram.org/bot$TOKEN/sendAudio"
+          # 1. الحصول على مسار الملف
+          TOKEN="${{ github.event.client_payload.token }}"
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          CHAT_ID="${{ github.event.client_payload.chat_id }}"
+          START="${{ github.event.client_payload.start }}"
+          END="${{ github.event.client_payload.end }}"
+
+          FILE_PATH=$(curl -s "https://api.telegram.org/bot$TOKEN/getFile?file_id=$FILE_ID" | jq -r .result.file_path)
+          
+          # 2. تحميل الملف
+          curl -L -o input_file "https://api.telegram.org/file/bot$TOKEN/$FILE_PATH"
+          
+          # 3. حساب المدة (SoX يحتاج البداية والمدة، وليس البداية والنهاية)
+          # سنقوم بتحويل التوقيت (HH:MM:SS) إلى ثوانٍ للقص الدقيق
+          S_SEC=$(echo $START | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
+          E_SEC=$(echo $END | awk -F: '{ if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1 }')
+          DURATION=$(echo "$E_SEC - $S_SEC" | bc)
+
+          # 4. القص باستخدام SoX (سريع جداً)
+          sox input_file output_audio.mp3 trim $S_SEC $DURATION
+
+          # 5. إرسال الملف الناتج
+          curl -F chat_id="$CHAT_ID" \
+               -F audio="@output_audio.mp3" \
+               -F caption="✅ تم القص بواسطة SoX بسرعة فائقة!" \
+               "https://api.telegram.org/bot$TOKEN/sendAudio"
