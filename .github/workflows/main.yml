@@ -1,4 +1,4 @@
-name: Pro Multi-Voice Note Cutter
+name: Ultimate Multi-Voice Cutter
 
 on:
   repository_dispatch:
@@ -8,7 +8,7 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Quick Environment Setup
+      - name: Setup Environment
         run: |
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
@@ -24,49 +24,49 @@ jobs:
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
           chat_id = "${{ github.event.client_payload.chat_id }}"
-          # هنا نستلم النص الذي يحتوي على المواقيت (سواء سطر واحد أو عدة أسطر)
-          time_data = "${{ github.event.client_payload.start }}" 
+          # استخدام R لمنع مشاكل الرموز الخاصة والثلاث علامات لدعم الأسطر
+          time_data = r"""${{ github.event.client_payload.start }}""" 
 
           def get_seconds(t_str):
               t_str = t_str.strip()
+              if not t_str: return 0
               parts = list(map(int, t_str.split(':')))
               if len(parts) == 3: return parts[0]*3600 + parts[1]*60 + parts[2]
               if len(parts) == 2: return parts[0]*60 + parts[1]
               return parts[0]
 
-          # 1. تحميل الملف الأصلي مرة واحدة فقط لتوفير الوقت
+          # 1. تحميل الملف الأصلي
           res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+          if not res.get('ok'):
+              print("Error: Could not get file. Maybe too large for bot.")
+              exit(1)
+
           file_path = res['result']['file_path']
           ext = file_path.split('.')[-1]
           input_file = f"in.{ext}"
           with open(input_file, "wb") as f:
               f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-          # 2. تحليل النص لاستخراج فترات التوقيت
-          # هذا النمط يبحث عن (توقيت) ثم (فاصل - أو مسافة) ثم (توقيت)
+          # 2. تحليل المواقيت (يدعم المسافة والشرطة والأسطر)
           time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
 
-          # 3. معالجة كل فترة زمنية وقصها
+          # 3. معالجة كل مقطع
           for i, (start_str, end_str) in enumerate(time_pairs):
-              start_sec = get_seconds(start_str)
-              end_sec = get_seconds(end_str)
-              duration = end_sec - start_sec
-              
-              if duration <= 0: continue
+              try:
+                  start_sec = get_seconds(start_str)
+                  end_sec = get_seconds(end_str)
+                  duration = end_sec - start_sec
+                  if duration <= 0: continue
 
-              output_file = f"voice_{i}.ogg"
-              
-              cmd = [
-                  "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-                  "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
-                  "-ar", "48000", "-ac", "1", output_file
-              ]
-              
-              subprocess.run(cmd, check=True)
+                  output_file = f"voice_{i}.ogg"
+                  subprocess.run([
+                      "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
+                      "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
+                      "-ar", "48000", "-ac", "1", output_file
+                  ], check=True)
 
-              # 4. إرسال المقطع الناتج كبصمة
-              with open(output_file, 'rb') as f:
-                  requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
-                                data={'chat_id': chat_id}, files={'voice': f})
-              
-              print(f"Sent segment {i+1}: {start_str} to {end_str}")
+                  with open(output_file, 'rb') as f:
+                      requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
+                                    data={'chat_id': chat_id}, files={'voice': f})
+              except Exception as e:
+                  print(f"Error in segment {i}: {e}")
