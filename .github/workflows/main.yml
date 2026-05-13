@@ -33,9 +33,9 @@ jobs:
           time_data = r"""${{ github.event.client_payload.start }}"""
 
           async def main():
-              input_file = "input_temp"
+              input_file = None
               
-              # 1. محاولة تحميل الملف (البوت للملفات < 20MB)
+              # 1. محاولة التحميل عبر البوت (للملفات الصغيرة)
               res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
               
               if res.get('ok'):
@@ -46,38 +46,49 @@ jobs:
                   with open(input_file, "wb") as f:
                       f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
               else:
-                  # 2. التحميل بالحساب الشخصي (للملفات الكبيرة)
+                  # 2. التحميل بالحساب الشخصي (للملفات الكبيرة > 20MB)
                   print("File too large for Bot. Using User Session...")
                   async with TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH")) as client:
-                      # التحميل باستخدام معرف الملف مباشرة
-                      input_file = await client.download_media(file_id)
+                      downloaded_path = await client.download_media(file_id)
+                      if downloaded_path:
+                          input_file = downloaded_path
+                          print(f"File downloaded successfully: {input_file}")
+                      else:
+                          print("Failed to download media via User Session.")
+                          return
 
-              # 3. استخراج المواقيت ومعالجة المقاطع
+              if not input_file or not os.path.exists(input_file):
+                  print("Error: Input file was not created.")
+                  return
+
+              # 3. تحليل المواقيت وقص المقاطع
               time_pairs = re.findall(r"(\d+:?\d*:?\d*)\s*[- ]\s*(\d+:?\d*:?\d*)", time_data)
 
-              for i, (start_str, end_str) in enumerate(time_pairs):
-                  try:
-                      def get_sec(t):
-                          p = list(map(int, t.split(':')))
-                          return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
+              async with TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH")) as client:
+                  for i, (start_str, end_str) in enumerate(time_pairs):
+                      try:
+                          def get_sec(t):
+                              p = list(map(int, t.split(':')))
+                              if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
+                              if len(p) == 2: return p[0]*60 + p[1]
+                              return p[0]
 
-                      start_sec, end_sec = get_sec(start_str), get_sec(end_str)
-                      duration = end_sec - start_sec
-                      if duration <= 0: continue
+                          start_sec, end_sec = get_sec(start_str), get_sec(end_str)
+                          duration = end_sec - start_sec
+                          if duration <= 0: continue
 
-                      output_file = f"voice_{i}.ogg"
-                      subprocess.run([
-                          "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-                          "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
-                          "-ar", "48000", "-ac", "1", output_file
-                      ], check=True)
+                          output_file = f"voice_{i}.ogg"
+                          subprocess.run([
+                              "./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
+                              "-i", input_file, "-c:a", "libopus", "-b:a", "64k",
+                              "-ar", "48000", "-ac", "1", output_file
+                          ], check=True)
 
-                      # الإرسال عبر الحساب الشخصي (لضمان وصولها كبصمة زرقاء لأي حجم)
-                      async with TelegramClient(StringSession(os.getenv("SESSION_TELEGRAM")), os.getenv("API_ID"), os.getenv("API_HASH")) as client:
+                          # إرسال المقطع كبصمة صوتية عبر الحساب الشخصي
                           await client.send_file(chat_id, output_file, voice_note=True)
                           
-                  except Exception as e:
-                      print(f"Error processing segment {i}: {e}")
+                      except Exception as e:
+                          print(f"Error processing segment {i}: {e}")
 
           if __name__ == "__main__":
               asyncio.run(main())
