@@ -1,4 +1,4 @@
-name: Pro Voice Note Cutter (Bot + UserSession)
+name: Telegram Voice Note Cutter
 
 on:
   repository_dispatch:
@@ -14,59 +14,47 @@ jobs:
           tar xf ffmpeg-release-amd64-static.tar.xz
           mv ffmpeg-*-amd64-static/ffmpeg .
           chmod +x ffmpeg
-          # تثبيت telethon للتعامل مع الحساب الشخصي
-          pip install requests telethon 
+          pip install requests
 
-      - name: Run Smart Voice Cutter
+      - name: Run Voice Note Converter
         shell: python
-        env:
-          SESSION_TELEGRAM: ${{ secrets.SESSION_TELEGRAM }}
-          API_ID: ${{ secrets.API_ID }} # ستحتاج لإضافتهم في Secrets
-          API_HASH: ${{ secrets.API_HASH }}
         run: |
-          import os, requests, subprocess, asyncio
-          from telethon import TelegramClient
-          from telethon.sessions import StringSession
+          import os, requests, subprocess
 
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
-          chat_id = int("${{ github.event.client_payload.chat_id }}")
+          chat_id = "${{ github.event.client_payload.chat_id }}"
           start = "${{ github.event.client_payload.start }}"
           end = "${{ github.event.client_payload.end }}"
 
-          async def main():
-              # 1. تحميل الملف الأصلي
-              res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
-              file_path = res['result']['file_path']
-              ext = file_path.split('.')[-1]
-              input_file = f"in.{ext}"
-              output_file = "voice.ogg"
-              
-              with open(input_file, "wb") as f:
-                  f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
+          # 1. تحميل الملف الأصلي
+          res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
+          file_path = res['result']['file_path']
+          ext = file_path.split('.')[-1]
+          input_file = f"in.{ext}"
+          output_file = "voice.ogg" # التحويل دائماً إلى ogg
+          
+          with open(input_file, "wb") as f:
+              f.write(requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}").content)
 
-              # 2. القص والتحويل لـ Opus (بصمة)
-              subprocess.run([
-                  "./ffmpeg", "-y", "-ss", start, "-to", end, "-i", input_file,
-                  "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-ac", "1", output_file
-              ], check=True)
+          # 2. القص والتحويل إلى ترميز Opus (بصمة تليجرام)
+          # الإعدادات: libopus، تردد 48k، قناة واحدة (mono)
+          cmd = [
+              "./ffmpeg", "-y", 
+              "-ss", start, 
+              "-to", end, 
+              "-i", input_file, 
+              "-c:a", "libopus", 
+              "-b:a", "64k", 
+              "-ar", "48000", 
+              "-ac", "1", 
+              output_file
+          ]
+          
+          subprocess.run(cmd, check=True)
 
-              file_size = os.path.getsize(output_file) / (1024 * 1024) # الحجم بالميجابايت
-
-              # 3. اختيار طريقة الإرسال
-              if file_size < 20:
-                  print(f"Sending via Bot (Size: {file_size:.2f}MB)")
-                  with open(output_file, 'rb') as f:
-                      requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
-                                    data={'chat_id': chat_id}, files={'voice': f})
-              else:
-                  print(f"Sending via User Account (Size: {file_size:.2f}MB)")
-                  # استخدام الحساب الشخصي للملفات الكبيرة
-                  api_id = os.getenv("API_ID")
-                  api_hash = os.getenv("API_HASH")
-                  session_str = os.getenv("SESSION_TELEGRAM")
-                  
-                  async with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
-                      await client.send_file(chat_id, output_file, voice_note=True)
-
-          asyncio.run(main())
+          # 3. إرسالها كـ Voice Note (بصمة) وليس كملف صوتي عادي
+          with open(output_file, 'rb') as f:
+              # نستخدم sendVoice بدلاً من sendAudio لتظهر كبصمة
+              requests.post(f"https://api.telegram.org/bot{token}/sendVoice", 
+                            data={'chat_id': chat_id}, files={'voice': f})
