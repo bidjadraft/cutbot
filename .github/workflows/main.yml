@@ -10,12 +10,15 @@ jobs:
     steps:
       - name: Quick Environment Setup
         run: |
-          # تحميل نسخة Static رسمية ومضمونة (فك ضغط سريع جداً)
+          # تحميل الملف المضغوط الذي يحتوي على ffmpeg و ffprobe معاً
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
-          # نقل الملف إلى المسار الرئيسي وتسميته ffmpeg
+          
+          # نقل المحركين (ffmpeg و ffprobe) للمجلد الرئيسي
           mv ffmpeg-*-amd64-static/ffmpeg .
-          chmod +x ffmpeg
+          mv ffmpeg-*-amd64-static/ffprobe .
+          chmod +x ffmpeg ffprobe
+          
           pip install pydub requests
 
       - name: Run Python Cutter
@@ -25,10 +28,15 @@ jobs:
           import requests
           from pydub import AudioSegment
 
-          # توجيه Pydub لاستخدام الملف التنفيذي في المجلد الحالي
-          AudioSegment.converter = os.path.abspath("ffmpeg")
-          # إضافة FFmpeg للمسار لضمان عمل ffprobe داخلياً
-          os.environ["PATH"] += os.pathsep + os.getcwd()
+          # تعريف المسار المطلق للمجلد الحالي
+          current_dir = os.getcwd()
+          
+          # إخبار Pydub بمكان المحركات بشكل صريح
+          AudioSegment.converter = os.path.join(current_dir, "ffmpeg")
+          AudioSegment.ffprobe = os.path.join(current_dir, "ffprobe")
+          
+          # إضافة المجلد الحالي للمسار (PATH) لضمان رؤية النظام للمحركات
+          os.environ["PATH"] += os.pathsep + current_dir
 
           token = "${{ github.event.client_payload.token }}"
           file_id = "${{ github.event.client_payload.file_id }}"
@@ -36,7 +44,7 @@ jobs:
           start_time = "${{ github.event.client_payload.start }}"
           end_time = "${{ github.event.client_payload.end }}"
 
-          # 1. جلب رابط الملف وتحميله
+          # 1. تحميل الملف
           res = requests.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
           file_path = res['result']['file_path']
           ext = file_path.split('.')[-1]
@@ -52,8 +60,11 @@ jobs:
 
           # 2. معالجة الصوت
           try:
+              # سيتم استخدام ffprobe هنا تلقائياً لتحليل الملف
               audio = AudioSegment.from_file(f"in.{ext}")
               cut_audio = audio[to_ms(start_time):to_ms(end_time)]
+              
+              # القص والتصدير
               cut_audio.export(f"out.{ext}", format=ext)
 
               # 3. إرسال النتيجة
@@ -62,4 +73,4 @@ jobs:
                                 data={'chat_id': chat_id}, files={'audio': f})
           except Exception as e:
               requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
-                            data={'chat_id': chat_id, 'text': f"❌ خطأ: {str(e)}"})
+                            data={'chat_id': chat_id, 'text': f"❌ خطأ تقني: {str(e)}"})
