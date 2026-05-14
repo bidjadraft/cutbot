@@ -30,14 +30,14 @@ jobs:
           BOT_TOKEN = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
           CHANNEL_ID = -1003679940913
           
-          # استلام البيانات كـ JSON نصي وتحويلها لتجنب أخطاء True/False
-          payload_raw = '${{ toJson(github.event.client_payload) }}'
+          # استخدام علامات تنصيص ثلاثية لمنع خطأ SyntaxError مع النصوص الطويلة
+          payload_raw = r'''${{ toJson(github.event.client_payload) }}'''
           C_PAYLOAD = json.loads(payload_raw)
           
           CHAT_ID = int(C_PAYLOAD['chat_id'])
           FILE_ID = C_PAYLOAD['file_id']
           TIMES = C_PAYLOAD['times']
-          IS_LARGE_INPUT = C_PAYLOAD['is_large'] # سيقرأها الآن كـ Python Boolean صحيح
+          IS_LARGE_INPUT = C_PAYLOAD['is_large']
 
           async def main():
               client = TelegramClient(StringSession(os.getenv("SESSION")), os.getenv("API_ID"), os.getenv("API_HASH"))
@@ -48,24 +48,19 @@ jobs:
               # 1. جلب الملف المصدر
               if IS_LARGE_INPUT:
                   async for msg in client.iter_messages(CHANNEL_ID, limit=5):
-                      # التأكد من وجود ميديا ومن أن الكابشن يحتوي على ID المستخدم (أمان إضافي)
                       if msg.media and str(CHAT_ID) in (msg.text or ""):
                           input_file = await msg.download_media()
                           break
               else:
-                  # تحميل عبر Bot API (صغير)
                   res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={FILE_ID}").json()
                   if res.get('ok'):
                       file_path = res['result']['file_path']
                       with open(input_file, 'wb') as f:
                           f.write(requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}").content)
-                  else:
-                      print("File ID invalid or expired")
-                      return
 
               if not os.path.exists(input_file): return
 
-              # 2. القص
+              # 2. القص والمعالجة
               matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", TIMES)
               for i, (s, e) in enumerate(matches):
                   def to_sec(t):
@@ -85,18 +80,16 @@ jobs:
                       if os.path.exists(output):
                           out_size = os.path.getsize(output)
                           if out_size <= 20 * 1024 * 1024:
-                              # إرسال مباشر بالبوت
                               with open(output, 'rb') as f:
                                   requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", data={"chat_id": CHAT_ID}, files={"voice": f})
                           else:
-                              # إرسال عبر Telethon للقناة ثم توجيه
+                              # إذا كان الناتج كبيراً يرسل للقناة ثم يوجه
                               sent_msg = await client.send_file(CHANNEL_ID, output, voice=True, caption=f"To: {CHAT_ID}")
                               requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/forwardMessage", data={"chat_id": CHAT_ID, "from_chat_id": CHANNEL_ID, "message_id": sent_msg.id})
                           os.remove(output)
-                  except Exception as ex:
-                      print(f"Error segment {i}: {ex}")
+                  except: continue
 
-              # 3. تنظيف القناة من كل الرسائل
+              # 3. تنظيف القناة كلياً
               async for msg in client.iter_messages(CHANNEL_ID):
                   await msg.delete()
               
