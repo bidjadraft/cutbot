@@ -1,99 +1,65 @@
-name: Hybrid Audio Processor
+name: Simple Audio Cutter
 
 on:
   repository_dispatch:
     types: [cut_audio]
 
 jobs:
-  process:
+  cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Tools
+      - name: Setup Tools
         run: |
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
           mv ffmpeg-*-amd64-static/ffmpeg .
           chmod +x ffmpeg
-          pip install telethon requests
+          pip install requests
 
-      - name: Hybrid Execute
+      - name: Execute Cutting
         shell: python
-        env:
-          SESSION: ${{ secrets.SESSION_TELEGRAM }}
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
         run: |
-          import os, re, asyncio, subprocess, requests, json
-          from telethon import TelegramClient
-          from telethon.sessions import StringSession
+          import os, re, subprocess, requests, json
 
           BOT_TOKEN = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
-          CHANNEL_ID = -1003679940913
+          payload = json.loads(r'''${{ toJson(github.event.client_payload) }}''')
           
-          # استخدام علامات تنصيص ثلاثية لمنع خطأ SyntaxError مع النصوص الطويلة
-          payload_raw = r'''${{ toJson(github.event.client_payload) }}'''
-          C_PAYLOAD = json.loads(payload_raw)
+          chat_id = payload['chat_id']
+          file_id = payload['file_id']
+          times = payload['times']
+
+          # 1. تحميل الملف عبر البوت
+          res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}").json()
+          if not res.get('ok'):
+              exit()
           
-          CHAT_ID = int(C_PAYLOAD['chat_id'])
-          FILE_ID = C_PAYLOAD['file_id']
-          TIMES = C_PAYLOAD['times']
-          IS_LARGE_INPUT = C_PAYLOAD['is_large']
+          file_path = res['result']['file_path']
+          audio_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+          
+          with open("input.audio", "wb") as f:
+              f.write(requests.get(audio_url).content)
 
-          async def main():
-              client = TelegramClient(StringSession(os.getenv("SESSION")), os.getenv("API_ID"), os.getenv("API_HASH"))
-              await client.connect()
-              
-              input_file = "input_audio"
-              
-              # 1. جلب الملف المصدر
-              if IS_LARGE_INPUT:
-                  async for msg in client.iter_messages(CHANNEL_ID, limit=5):
-                      if msg.media and str(CHAT_ID) in (msg.text or ""):
-                          input_file = await msg.download_media()
-                          break
-              else:
-                  res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={FILE_ID}").json()
-                  if res.get('ok'):
-                      file_path = res['result']['file_path']
-                      with open(input_file, 'wb') as f:
-                          f.write(requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}").content)
+          # 2. استخراج التواقيت والقص
+          matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", times)
+          
+          for i, (s, e) in enumerate(matches):
+              def to_sec(t):
+                  p = list(map(int, t.split(':')))
+                  return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
 
-              if not os.path.exists(input_file): return
+              start = to_sec(s)
+              duration = to_sec(e) - start
+              output = f"result_{i}.ogg"
 
-              # 2. القص والمعالجة
-              matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", TIMES)
-              for i, (s, e) in enumerate(matches):
-                  def to_sec(t):
-                      p = list(map(int, t.split(':')))
-                      if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
-                      if len(p) == 2: return p[0]*60 + p[1]
-                      return p[0]
-                  
-                  try:
-                      start_sec = to_sec(s)
-                      duration = to_sec(e) - start_sec
-                      if duration <= 0: continue
-                      
-                      output = f"cut_{i}.ogg"
-                      subprocess.run(["./ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration), "-i", input_file, "-c:a", "libopus", "-b:a", "64k", output])
-                      
-                      if os.path.exists(output):
-                          out_size = os.path.getsize(output)
-                          if out_size <= 20 * 1024 * 1024:
-                              with open(output, 'rb') as f:
-                                  requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", data={"chat_id": CHAT_ID}, files={"voice": f})
-                          else:
-                              # إذا كان الناتج كبيراً يرسل للقناة ثم يوجه
-                              sent_msg = await client.send_file(CHANNEL_ID, output, voice=True, caption=f"To: {CHAT_ID}")
-                              requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/forwardMessage", data={"chat_id": CHAT_ID, "from_chat_id": CHANNEL_ID, "message_id": sent_msg.id})
-                          os.remove(output)
-                  except: continue
+              subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", "input.audio", "-c:a", "libopus", "-b:a", "64k", output])
 
-              # 3. تنظيف القناة كلياً
-              async for msg in client.iter_messages(CHANNEL_ID):
-                  await msg.delete()
-              
-              if os.path.exists(input_file): os.remove(input_file)
-              await client.disconnect()
+              # 3. إرسال النتيجة
+              if os.path.exists(output):
+                  with open(output, "rb") as f:
+                      requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", 
+                                    data={"chat_id": chat_id}, 
+                                    files={"voice": f})
+                  os.remove(output)
 
-          asyncio.run(main())
+          if os.path.exists("input.audio"):
+              os.remove("input.audio")
