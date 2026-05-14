@@ -1,4 +1,4 @@
-name: Channel-Based Audio Processor
+name: Hybrid Audio Processor
 
 on:
   repository_dispatch:
@@ -8,7 +8,7 @@ jobs:
   process:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup Environment
+      - name: Install Tools
         run: |
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
@@ -16,7 +16,7 @@ jobs:
           chmod +x ffmpeg
           pip install telethon requests
 
-      - name: Process From Channel
+      - name: Hybrid Execute
         shell: python
         env:
           SESSION: ${{ secrets.SESSION_TELEGRAM }}
@@ -29,54 +29,60 @@ jobs:
 
           BOT_TOKEN = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
           CHANNEL_ID = -1003679940913
+          
+          C_PAYLOAD = ${{ toJson(github.event.client_payload) }}
+          CHAT_ID = int(C_PAYLOAD['chat_id'])
+          FILE_ID = C_PAYLOAD['file_id']
+          TIMES = C_PAYLOAD['times']
+          IS_LARGE_INPUT = C_PAYLOAD['is_large']
 
           async def main():
               client = TelegramClient(StringSession(os.getenv("SESSION")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
               
-              # 1. جلب آخر رسالة من القناة
-              async for message in client.iter_messages(CHANNEL_ID, limit=1):
-                  if not message.media or not message.text:
-                      print("No media or caption found!")
-                      return
-
-                  # 2. استخراج البيانات من الكابشن
-                  # نتوقع النص بصيغة: Times: 00:10-00:20 \n UserID: 123456
-                  caption = message.text
-                  try:
-                      target_user_id = int(re.search(r"UserID:\s*(\d+)", caption).group(1))
-                      time_data = re.search(r"Times:\s*(.*)", caption).group(1)
-                  except:
-                      print("Could not parse caption")
-                      return
-
-                  # 3. تحميل الملف
-                  input_file = await message.download_media()
-                  
-                  # 4. معالجة القص
-                  matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", time_data)
-                  for i, (s, e) in enumerate(matches):
-                      def to_sec(t):
-                          p = list(map(int, t.split(':')))
-                          return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
-
-                      start = to_sec(s)
-                      duration = to_sec(e) - start
-                      output = f"result_{i}.ogg"
-                      
-                      subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", input_file, "-c:a", "libopus", "-b:a", "64k", output])
-                      
-                      # 5. الإرسال لصاحب الـ ID المستخرج
-                      if os.path.exists(output):
-                          with open(output, 'rb') as f:
-                              requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", 
-                                            data={"chat_id": target_user_id}, 
-                                            files={"voice": f})
-                          os.remove(output)
-
-                  if os.path.exists(input_file):
-                      os.remove(input_file)
+              input_file = "input_audio"
               
+              # 1. جلب الملف المصدر
+              if IS_LARGE_INPUT:
+                  async for msg in client.iter_messages(CHANNEL_ID, limit=1):
+                      input_file = await msg.download_media()
+                      # حفظ معرف الرسالة لحذفها لاحقاً
+                      msg_to_delete = msg.id
+              else:
+                  # تحميل عبر Bot API (صغير)
+                  file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={FILE_ID}").json()
+                  file_path = file_info['result']['file_path']
+                  with open(input_file, 'wb') as f:
+                      f.write(requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}").content)
+
+              # 2. القص
+              matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", TIMES)
+              for i, (s, e) in enumerate(matches):
+                  def to_sec(t):
+                      p = list(map(int, t.split(':')))
+                      return p[0]*3600+p[1]*60+p[2] if len(p)==3 else p[0]*60+p[1] if len(p)==2 else p[0]
+                  
+                  start, duration = to_sec(s), to_sec(e) - to_sec(s)
+                  output = f"cut_{i}.ogg"
+                  subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", input_file, "-c:a", "libopus", "-b:a", "64k", output])
+                  
+                  if os.path.exists(output):
+                      out_size = os.path.getsize(output)
+                      if out_size <= 20 * 1024 * 1024:
+                          # إرسال مباشر بالبوت
+                          with open(output, 'rb') as f:
+                              requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", data={"chat_id": CHAT_ID}, files={"voice": f})
+                      else:
+                          # إرسال عبر Telethon للقناة ثم توجيه
+                          sent_msg = await client.send_file(CHANNEL_ID, output, voice=True)
+                          requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/forwardMessage", data={"chat_id": CHAT_ID, "from_chat_id": CHANNEL_ID, "message_id": sent_msg.id})
+                      os.remove(output)
+
+              # 3. تنظيف القناة (حذف كل الرسائل)
+              async for msg in client.iter_messages(CHANNEL_ID):
+                  await msg.delete()
+              
+              if os.path.exists(input_file): os.remove(input_file)
               await client.disconnect()
 
           asyncio.run(main())
