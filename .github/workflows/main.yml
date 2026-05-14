@@ -1,15 +1,14 @@
-name: Hybrid Audio Processor Bot
+name: Channel-Based Audio Processor
 
 on:
   repository_dispatch:
     types: [cut_audio]
-  workflow_dispatch:
 
 jobs:
   process:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Dependencies
+      - name: Setup Environment
         run: |
           wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
           tar xf ffmpeg-release-amd64-static.tar.xz
@@ -17,71 +16,67 @@ jobs:
           chmod +x ffmpeg
           pip install telethon requests
 
-      - name: Execute Processor
+      - name: Process From Channel
         shell: python
         env:
           SESSION: ${{ secrets.SESSION_TELEGRAM }}
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
         run: |
           import os, re, asyncio, subprocess, requests
           from telethon import TelegramClient
           from telethon.sessions import StringSession
 
-          # الإعدادات الأساسية
-          CHAT_ID = int("${{ github.event.client_payload.chat_id }}")
-          FILE_ID = "${{ github.event.client_payload.file_id }}"
-          TIME_DATA = r"""${{ github.event.client_payload.start }}"""
           BOT_TOKEN = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
           CHANNEL_ID = -1003679940913
-          MODEL = "gemini-2.5-flash-lite" # من القائمة المسموحة
 
           async def main():
               client = TelegramClient(StringSession(os.getenv("SESSION")), os.getenv("API_ID"), os.getenv("API_HASH"))
               await client.connect()
               
-              input_file = None
-              search_target = CHANNEL_ID if FILE_ID == "large_file" else CHAT_ID
-              
-              # جلب أحدث ميديا
-              async for message in client.iter_messages(search_target, limit=10):
-                  if message.media:
-                      input_file = await message.download_media()
-                      break
+              # 1. جلب آخر رسالة من القناة
+              async for message in client.iter_messages(CHANNEL_ID, limit=1):
+                  if not message.media or not message.text:
+                      print("No media or caption found!")
+                      return
 
-              if not input_file:
-                  return
-
-              # استخراج التواقيت باستخدام Regex
-              matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", TIME_DATA)
-              
-              for i, (s, e) in enumerate(matches):
-                  def to_sec(t):
-                      p = list(map(int, t.split(':')))
-                      if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
-                      if len(p) == 2: return p[0]*60 + p[1]
-                      return p[0]
-
+                  # 2. استخراج البيانات من الكابشن
+                  # نتوقع النص بصيغة: Times: 00:10-00:20 \n UserID: 123456
+                  caption = message.text
                   try:
+                      target_user_id = int(re.search(r"UserID:\s*(\d+)", caption).group(1))
+                      time_data = re.search(r"Times:\s*(.*)", caption).group(1)
+                  except:
+                      print("Could not parse caption")
+                      return
+
+                  # 3. تحميل الملف
+                  input_file = await message.download_media()
+                  
+                  # 4. معالجة القص
+                  matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", time_data)
+                  for i, (s, e) in enumerate(matches):
+                      def to_sec(t):
+                          p = list(map(int, t.split(':')))
+                          return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
+
                       start = to_sec(s)
                       duration = to_sec(e) - start
-                      if duration <= 0: continue
+                      output = f"result_{i}.ogg"
                       
-                      output = f"part_{i}.ogg"
                       subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", input_file, "-c:a", "libopus", "-b:a", "64k", output])
                       
-                      # الإرسال عبر requests
-                      with open(output, 'rb') as f:
-                          requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", data={"chat_id": CHAT_ID}, files={"voice": f})
-                      os.remove(output)
-                  except: continue
+                      # 5. الإرسال لصاحب الـ ID المستخرج
+                      if os.path.exists(output):
+                          with open(output, 'rb') as f:
+                              requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", 
+                                            data={"chat_id": target_user_id}, 
+                                            files={"voice": f})
+                          os.remove(output)
 
-              # مثال لاستخدام Gemini (إذا لزم الأمر مستقبلاً لتحليل النص)
-              # url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={os.getenv('GEMINI_KEY')}"
+                  if os.path.exists(input_file):
+                      os.remove(input_file)
               
-              if input_file and os.path.exists(input_file):
-                  os.remove(input_file)
               await client.disconnect()
 
           asyncio.run(main())
