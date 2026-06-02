@@ -1,65 +1,106 @@
-name: Simple Audio Cutter
+name: Cut Audio Workflow
 
 on:
-  repository_dispatch:
-    types: [cut_audio]
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        required: true
+      file_id:
+        required: true
+      steps:
+        required: true
 
 jobs:
-  cut:
+  process_audio:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup Tools
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
         run: |
-          wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-          tar xf ffmpeg-release-amd64-static.tar.xz
-          mv ffmpeg-*-amd64-static/ffmpeg .
-          chmod +x ffmpeg
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           pip install requests
 
-      - name: Execute Cutting
+      - name: Execute Embedded Python Script
+        env:
+          BOT_TOKEN: "8853762125:AAEJeYtDufaLoQcq8ZbuHpuQ3R42WYJkBXo"
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          FILE_ID: ${{ github.event.inputs.file_id }}
+          STEPS: ${{ github.event.inputs.steps }}
         shell: python
         run: |
-          import os, re, subprocess, requests, json
+          import os
+          import json
+          import requests
+          import subprocess
 
-          BOT_TOKEN = "8661494358:AAFHqOKhwWbNC4-pS24MD9CRCOoaaump3T0"
-          payload = json.loads(r'''${{ toJson(github.event.client_payload) }}''')
-          
-          chat_id = payload['chat_id']
-          file_id = payload['file_id']
-          times = payload['times']
+          BOT_TOKEN = os.environ["BOT_TOKEN"]
+          CHAT_ID = os.environ["CHAT_ID"]
+          FILE_ID = os.environ["FILE_ID"]
+          STEPS = json.loads(os.environ["STEPS"])
 
-          # 1. تحميل الملف عبر البوت
-          res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}").json()
-          if not res.get('ok'):
-              exit()
-          
-          file_path = res['result']['file_path']
-          audio_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-          
-          with open("input.audio", "wb") as f:
-              f.write(requests.get(audio_url).content)
+          def get_file_path(file_id):
+              url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+              res = requests.get(url).json()
+              if res.get("ok"):
+                  return res["result"]["file_path"]
+              return None
 
-          # 2. استخراج التواقيت والقص
-          matches = re.findall(r"(\d+[:\d]*)\s*[- ]\s*(\d+[:\d]*)", times)
-          
-          for i, (s, e) in enumerate(matches):
-              def to_sec(t):
-                  p = list(map(int, t.split(':')))
-                  return p[0]*3600 + p[1]*60 + p[2] if len(p)==3 else p[0]*60 + p[1] if len(p)==2 else p[0]
+          def download_file(file_path, output_name):
+              url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+              with requests.get(url, stream=True) as r:
+                  with open(output_name, 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=1024*1024):
+                          f.write(chunk)
 
-              start = to_sec(s)
-              duration = to_sec(e) - start
-              output = f"result_{i}.ogg"
+          def send_voice(chat_id, filepath, caption):
+              url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice"
+              with open(filepath, 'rb') as voice:
+                  requests.post(url, data={'chat_id': chat_id, 'caption': caption}, files={'voice': voice})
 
-              subprocess.run(["./ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", "input.audio", "-c:a", "libopus", "-b:a", "64k", output])
+          def time_to_sec(t_str):
+              parts = list(map(int, t_str.split(':')))
+              if len(parts) == 2:
+                  return parts[0] * 60 + parts[1]
+              elif len(parts) == 3:
+                  return parts[0] * 3600 + parts[1] * 60 + parts[2]
+              return 0
 
-              # 3. إرسال النتيجة
-              if os.path.exists(output):
-                  with open(output, "rb") as f:
-                      requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice", 
-                                    data={"chat_id": chat_id}, 
-                                    files={"voice": f})
-                  os.remove(output)
-
-          if os.path.exists("input.audio"):
-              os.remove("input.audio")
+          tg_path = get_file_path(FILE_ID)
+          if tg_path:
+              input_file = "input_audio.file"
+              download_file(tg_path, input_file)
+              
+              for idx, step in enumerate(STEPS):
+                  start_str = step["start"]
+                  end_str = step["end"]
+                  
+                  start_sec = time_to_sec(start_str)
+                  end_sec = time_to_sec(end_str)
+                  duration = end_sec - start_sec
+                  
+                  if duration <= 0:
+                      continue
+                      
+                  out_file = f"cut_{idx}_{start_str.replace(':', '_')}.ogg"
+                  
+                  cmd = [
+                      "ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
+                      "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file
+                  ]
+                  subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  
+                  if os.path.exists(out_file):
+                      caption = f"✂️ المقطع {idx+1}\nمن {start_str} إلى {end_str}"
+                      send_voice(CHAT_ID, out_file, caption)
+                      os.remove(out_file)
+                      
+              if os.path.exists(input_file):
+                  os.remove(input_file)
