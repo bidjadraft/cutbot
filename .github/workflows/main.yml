@@ -1,17 +1,13 @@
-name: Cut Audio Workflow
+name: Telethon Audio Cutter Bot
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      chat_id:
-        required: true
-      file_id:
-        required: true
-      steps:
-        required: true
 
 jobs:
-  process_audio:
+  run_bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -26,94 +22,107 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install requests
+          pip install telethon requests
 
-      - name: Execute Embedded Python Script
+      - name: Run Telethon Bot Script
         env:
+          API_ID: 24629594
+          API_HASH: "a79fa760e65af09a85eb2cc97cb2263c"
           BOT_TOKEN: "8853762125:AAEJeYtDufaLoQcq8ZbuHpuQ3R42WYJkBXo"
-          CHAT_ID: ${{ github.event.inputs.chat_id }}
-          FILE_ID: ${{ github.event.inputs.file_id }}
-          STEPS: ${{ github.event.inputs.steps }}
         shell: python
         run: |
           import os
+          import re
           import json
-          import requests
+          import asyncio
           import subprocess
+          from telethon import TelegramClient, events
+          from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeFilename
 
+          API_ID = int(os.environ["API_ID"])
+          API_HASH = os.environ["API_HASH"]
           BOT_TOKEN = os.environ["BOT_TOKEN"]
-          CHAT_ID = os.environ["CHAT_ID"]
-          FILE_ID = os.environ["FILE_ID"]
-          STEPS = json.loads(os.environ["STEPS"])
 
-          def get_file_path(file_id):
-              url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-              res = requests.get(url).json()
-              if res.get("ok"):
-                  return res["result"]["file_path"]
-              return None
-
-          def download_file(file_path, output_name):
-              url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-              with requests.get(url, stream=True) as r:
-                  with open(output_name, 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=1024*1024):
-                          f.write(chunk)
-
-          def send_voice(chat_id, filepath, caption):
-              url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice"
-              with open(filepath, 'rb') as voice:
-                  res = requests.post(url, data={'chat_id': chat_id, 'caption': caption}, files={'voice': voice})
-                  print(f"Telegram Response: {res.text}")
+          bot = TelegramClient('bot_session_gh', API_ID, API_HASH)
+          user_states = {}
 
           def time_to_sec(t_str):
               parts = list(map(int, t_str.split(':')))
-              if len(parts) == 2:
-                  return parts[0] * 60 + parts[1]
-              elif len(parts) == 3:
-                  return parts[0] * 3600 + parts[1] * 60 + parts[2]
-              return 0
+              return parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
 
-          tg_path = get_file_path(FILE_ID)
-          if tg_path:
-              ext = os.path.splitext(tg_path)[1] if os.path.splitext(tg_path)[1] else ".mp3"
-              input_file = f"input_audio{ext}"
+          @bot.on(events.NewMessage(pattern='/start'))
+          async def start(event):
+              user_states[event.chat_id] = {}
+              await event.reply("أرسل لي الملف الصوتي أولاً (يدعم حتى 2 جيجابايت عبر Telethon).")
+
+          @bot.on(events.NewMessage)
+          async def handle_msg(event):
+              if event.text and event.text.startswith('/'): return
+              chat_id = event.chat_id
               
-              print(f"Downloading file: {tg_path} as {input_file}")
-              download_file(tg_path, input_file)
+              is_audio = event.audio or event.voice or (event.document and any(isinstance(x, DocumentAttributeAudio) for x in event.document.attributes))
               
-              for idx, step in enumerate(STEPS):
-                  start_str = step["start"]
-                  end_str = step["end"]
+              if is_audio:
+                  user_states[chat_id] = {"message": event.message, "steps": []}
+                  await event.reply("تم استقبال الملف بنجاح. أرسل المواقيت الآن بالصيغة التالية:\n00:30 12:28\nيمكنك إرسال عدة أسطر لمواقيت متعددة.")
+                  return
+
+              if event.text and chat_id in user_states and "message" in user_states[chat_id]:
+                  state = user_states[chat_id]
+                  if "confirmed" in state: return
+
+                  lines = event.text.split("\n")
+                  valid_steps = []
+                  for line in lines:
+                      parts = line.strip().split()
+                      if len(parts) == 2:
+                          valid_steps.append({"start": parts[0], "end": parts[1]})
+
+                  if not valid_steps:
+                      await event.reply("صيغة المواقيت غير صحيحة. أرسلها مثل:\n01:20 02:40")
+                      return
+
+                  state["steps"] = valid_steps
                   
-                  start_sec = time_to_sec(start_str)
-                  end_sec = time_to_sec(end_str)
+                  buttons = [[events.inline_buttons.Button.inline("⚡ بدء القص والرفع", b"confirm_cut")]]
+                  await event.reply("هل أنت متأكد من المواقيت؟ اضغط على الزر أدناه لبدء المعالجة عبر Telethon:", buttons=buttons)
+
+          @bot.on(events.CallbackQuery(data=b'confirm_cut'))
+          async def process_cut(event):
+              chat_id = event.chat_id
+              if chat_id not in user_states or "message" not in user_states[chat_id]:
+                  await event.answer("البيانات غير موجودة، أعد المحاولة.", alert=True)
+                  return
+
+              state = user_states[chat_id]
+              state["confirmed"] = True
+              await event.answer("جاري التحميل والمعالجة...")
+              prog_msg = await bot.send_message(chat_id, "📥 جاري تحميل الملف الصوتي من سيرفرات تليجرام...")
+
+              input_file = f"input_{chat_id}.mp3"
+              await bot.download_media(state["message"], input_file)
+
+              for idx, step in enumerate(state["steps"]):
+                  await prog_msg.edit(f"✂️ جاري معالجة المقطع {idx+1} من {len(state['steps'])}...")
+                  start_str, end_str = step["start"], step["end"]
+                  start_sec, end_sec = time_to_sec(start_str), time_to_sec(end_str)
                   duration = end_sec - start_sec
-                  
-                  if duration <= 0:
-                      print(f"Skipping invalid duration for step {idx+1}")
-                      continue
-                      
-                  out_file = f"cut_{idx}_{start_str.replace(':', '_')}.ogg"
-                  print(f"Cutting clip {idx+1}: {start_str} to {end_str}")
-                  
-                  cmd = [
-                      "ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-                      "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file
-                  ]
-                  result = subprocess.run(cmd, capture_output=True, text=True)
-                  
-                  if result.returncode != 0:
-                      print(f"FFmpeg Error: {result.stderr}")
-                  
+
+                  if duration <= 0: continue
+
+                  out_file = f"cut_{chat_id}_{idx}_{start_str.replace(':', '_')}.ogg"
+                  cmd = ["ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration), "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file]
+                  subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
                   if os.path.exists(out_file):
                       caption = f"✂️ المقطع {idx+1}\nمن {start_str} إلى {end_str}"
-                      send_voice(CHAT_ID, out_file, caption)
+                      await bot.send_file(chat_id, out_file, caption=caption, voice=True)
                       os.remove(out_file)
-                  else:
-                      print(f"Output file {out_file} was not created.")
-                      
-              if os.path.exists(input_file):
-                  os.remove(input_file)
-          else:
-              print("Failed to get file path from Telegram.")
+
+              if os.path.exists(input_file): os.remove(input_file)
+              await prog_msg.delete()
+              user_states.pop(chat_id, None)
+
+          print("Bot is running...")
+          bot.start(bot_token=BOT_TOKEN)
+          bot.run_until_disconnected()
