@@ -63,7 +63,8 @@ jobs:
           def send_voice(chat_id, filepath, caption):
               url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVoice"
               with open(filepath, 'rb') as voice:
-                  requests.post(url, data={'chat_id': chat_id, 'caption': caption}, files={'voice': voice})
+                  res = requests.post(url, data={'chat_id': chat_id, 'caption': caption}, files={'voice': voice})
+                  print(f"Telegram Response: {res.text}")
 
           def time_to_sec(t_str):
               parts = list(map(int, t_str.split(':')))
@@ -75,7 +76,10 @@ jobs:
 
           tg_path = get_file_path(FILE_ID)
           if tg_path:
-              input_file = "input_audio.file"
+              ext = os.path.splitext(tg_path)[1] if os.path.splitext(tg_path)[1] else ".mp3"
+              input_file = f"input_audio{ext}"
+              
+              print(f"Downloading file: {tg_path} as {input_file}")
               download_file(tg_path, input_file)
               
               for idx, step in enumerate(STEPS):
@@ -87,20 +91,29 @@ jobs:
                   duration = end_sec - start_sec
                   
                   if duration <= 0:
+                      print(f"Skipping invalid duration for step {idx+1}")
                       continue
                       
                   out_file = f"cut_{idx}_{start_str.replace(':', '_')}.ogg"
+                  print(f"Cutting clip {idx+1}: {start_str} to {end_str}")
                   
                   cmd = [
                       "ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
                       "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file
                   ]
-                  subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  
+                  if result.returncode != 0:
+                      print(f"FFmpeg Error: {result.stderr}")
                   
                   if os.path.exists(out_file):
                       caption = f"✂️ المقطع {idx+1}\nمن {start_str} إلى {end_str}"
                       send_voice(CHAT_ID, out_file, caption)
                       os.remove(out_file)
+                  else:
+                      print(f"Output file {out_file} was not created.")
                       
               if os.path.exists(input_file):
                   os.remove(input_file)
+          else:
+              print("Failed to get file path from Telegram.")
