@@ -53,12 +53,17 @@ jobs:
           STEPS = json.loads(os.environ["STEPS"])
 
           def time_to_sec(t_str):
-              parts = list(map(int, t_str.split(':')))
-              if len(parts) == 2:
-                  return parts[0] * 60 + parts[1]
-              elif len(parts) == 3:
-                  return parts[0] * 3600 + parts[1] * 60 + parts[2]
-              return 0
+              if not t_str or not t_str.strip():
+                  return -1
+              try:
+                  parts = [int(p) for p in t_str.strip().split(':') if p.strip()]
+                  if len(parts) == 2:
+                      return parts[0] * 60 + parts[1]
+                  elif len(parts) == 3:
+                      return parts[0] * 3600 + parts[1] * 60 + parts[2]
+              except Exception:
+                  return -1
+              return -1
 
           async def main():
               client = TelegramClient('backend_session', API_ID, API_HASH)
@@ -75,14 +80,20 @@ jobs:
               await client.download_media(msg, input_file)
 
               for idx, step in enumerate(STEPS):
-                  start_str = step["start"]
-                  end_str = step["end"]
+                  start_str = step.get("start", "")
+                  end_str = step.get("end", "")
                   
                   start_sec = time_to_sec(start_str)
                   end_sec = time_to_sec(end_str)
-                  duration = end_sec - start_sec
                   
+                  # تجاوز السطر إذا كان يحتوي على قيم فارغة أو غير صحيحة
+                  if start_sec == -1 or end_sec == -1:
+                      print(f"Skipping invalid or empty time format at step {idx+1}")
+                      continue
+                      
+                  duration = end_sec - start_sec
                   if duration <= 0:
+                      print(f"Skipping step {idx+1}: duration is 0 or negative")
                       continue
                       
                   out_file = f"cut_{CHAT_ID}_{idx}_{start_str.replace(':', '_')}.oga"
@@ -109,10 +120,7 @@ jobs:
                               attributes=[DocumentAttributeAudio(duration=int(duration), voice=True, title="", performer="")]
                           )
                           print(f"Part {idx+1} uploaded successfully.")
-                          
-                          # إضافة تأخير زمني لتفادي حظر التكرار (Flood Limit) من سيرفرات تليجرام
                           await asyncio.sleep(5)
-                          
                       except Exception as e:
                           print(f"Error uploading part {idx+1}: {e}")
                       finally:
