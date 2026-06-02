@@ -50,15 +50,18 @@ jobs:
               parts = list(map(int, t_str.split(':')))
               return parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
 
-          @bot.on(events.NewMessage(pattern='/start'))
-          async def start(event):
-              user_states[event.chat_id] = {}
-              await event.reply("أرسل لي الملف الصوتي أولاً (يدعم حتى 2 جيجابايت عبر Telethon).")
-
           @bot.on(events.NewMessage)
           async def handle_msg(event):
-              if event.text and event.text.startswith('/'): return
+              if not event.text and not event.media: return
               chat_id = event.chat_id
+              
+              # التعامل مع أمر /start وحظر معالجته في بقية الشروط
+              if event.text and event.text.startswith('/start'):
+                  user_states[chat_id] = {}
+                  await event.reply("أرسل لي الملف الصوتي أولاً (يدعم حتى 2 جيجابايت عبر Telethon).")
+                  return
+                  
+              if event.text and event.text.startswith('/'): return
               
               is_audio = event.audio or event.voice or (event.document and any(isinstance(x, DocumentAttributeAudio) for x in event.document.attributes))
               
