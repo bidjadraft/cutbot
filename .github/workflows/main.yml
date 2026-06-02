@@ -1,13 +1,17 @@
-name: Telethon Audio Cutter Bot
+name: Telethon Audio Cutter Backend
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      chat_id:
+        required: true
+      message_id:
+        required: true
+      steps:
+        required: true
 
 jobs:
-  run_bot:
+  silent_process:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -24,108 +28,79 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install telethon requests
 
-      - name: Run Telethon Bot Script
+      - name: Run Telethon Background Cutter
         env:
           API_ID: 24629594
           API_HASH: "a79fa760e65af09a85eb2cc97cb2263c"
           BOT_TOKEN: "8853762125:AAEJeYtDufaLoQcq8ZbuHpuQ3R42WYJkBXo"
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          MESSAGE_ID: ${{ github.event.inputs.message_id }}
+          STEPS: ${{ github.event.inputs.steps }}
         shell: python
         run: |
           import os
-          import re
           import json
           import asyncio
           import subprocess
-          from telethon import TelegramClient, events
-          from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeFilename
+          from telethon import TelegramClient
 
           API_ID = int(os.environ["API_ID"])
           API_HASH = os.environ["API_HASH"]
           BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-          bot = TelegramClient('bot_session_gh', API_ID, API_HASH)
-          user_states = {}
+          CHAT_ID = int(os.environ["CHAT_ID"])
+          MESSAGE_ID = int(os.environ["MESSAGE_ID"])
+          STEPS = json.loads(os.environ["STEPS"])
 
           def time_to_sec(t_str):
               parts = list(map(int, t_str.split(':')))
-              return parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
+              if len(parts) == 2:
+                  return parts[0] * 60 + parts[1]
+              elif len(parts) == 3:
+                  return parts[0] * 3600 + parts[1] * 60 + parts[2]
+              return 0
 
-          @bot.on(events.NewMessage)
-          async def handle_msg(event):
-              if not event.text and not event.media: return
-              chat_id = event.chat_id
+          async def main():
+              client = TelegramClient('backend_session', API_ID, API_HASH)
+              await client.start(bot_token=BOT_TOKEN)
               
-              # التعامل مع أمر /start وحظر معالجته في بقية الشروط
-              if event.text and event.text.startswith('/start'):
-                  user_states[chat_id] = {}
-                  await event.reply("أرسل لي الملف الصوتي أولاً (يدعم حتى 2 جيجابايت عبر Telethon).")
+              # جلب الرسالة الأصلية الحاملة للملف الصوتي بدقة
+              msg = await client.get_messages(CHAT_ID, ids=MESSAGE_ID)
+              if not msg or not msg.media:
+                  print("Target message or media not found.")
+                  await client.disconnect()
                   return
+
+              input_file = f"download_{CHAT_ID}.mp3"
+              print("Downloading media via Telethon...")
+              await client.download_media(msg, input_file)
+
+              for idx, step in enumerate(STEPS):
+                  start_str = step["start"]
+                  end_str = step["end"]
                   
-              if event.text and event.text.startswith('/'): return
-              
-              is_audio = event.audio or event.voice or (event.document and any(isinstance(x, DocumentAttributeAudio) for x in event.document.attributes))
-              
-              if is_audio:
-                  user_states[chat_id] = {"message": event.message, "steps": []}
-                  await event.reply("تم استقبال الملف بنجاح. أرسل المواقيت الآن بالصيغة التالية:\n00:30 12:28\nيمكنك إرسال عدة أسطر لمواقيت متعددة.")
-                  return
-
-              if event.text and chat_id in user_states and "message" in user_states[chat_id]:
-                  state = user_states[chat_id]
-                  if "confirmed" in state: return
-
-                  lines = event.text.split("\n")
-                  valid_steps = []
-                  for line in lines:
-                      parts = line.strip().split()
-                      if len(parts) == 2:
-                          valid_steps.append({"start": parts[0], "end": parts[1]})
-
-                  if not valid_steps:
-                      await event.reply("صيغة المواقيت غير صحيحة. أرسلها مثل:\n01:20 02:40")
-                      return
-
-                  state["steps"] = valid_steps
-                  
-                  buttons = [[events.inline_buttons.Button.inline("⚡ بدء القص والرفع", b"confirm_cut")]]
-                  await event.reply("هل أنت متأكد من المواقيت؟ اضغط على الزر أدناه لبدء المعالجة عبر Telethon:", buttons=buttons)
-
-          @bot.on(events.CallbackQuery(data=b'confirm_cut'))
-          async def process_cut(event):
-              chat_id = event.chat_id
-              if chat_id not in user_states or "message" not in user_states[chat_id]:
-                  await event.answer("البيانات غير موجودة، أعد المحاولة.", alert=True)
-                  return
-
-              state = user_states[chat_id]
-              state["confirmed"] = True
-              await event.answer("جاري التحميل والمعالجة...")
-              prog_msg = await bot.send_message(chat_id, "📥 جاري تحميل الملف الصوتي من سيرفرات تليجرام...")
-
-              input_file = f"input_{chat_id}.mp3"
-              await bot.download_media(state["message"], input_file)
-
-              for idx, step in enumerate(state["steps"]):
-                  await prog_msg.edit(f"✂️ جاري معالجة المقطع {idx+1} من {len(state['steps'])}...")
-                  start_str, end_str = step["start"], step["end"]
-                  start_sec, end_sec = time_to_sec(start_str), time_to_sec(end_str)
+                  start_sec = time_to_sec(start_str)
+                  end_sec = time_to_sec(end_str)
                   duration = end_sec - start_sec
-
-                  if duration <= 0: continue
-
-                  out_file = f"cut_{chat_id}_{idx}_{start_str.replace(':', '_')}.ogg"
-                  cmd = ["ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration), "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file]
+                  
+                  if duration <= 0:
+                      continue
+                      
+                  out_file = f"cut_{CHAT_ID}_{idx}_{start_str.replace(':', '_')}.ogg"
+                  
+                  cmd = [
+                      "ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
+                      "-i", input_file, "-c:a", "libvorbis", "-q:a", "4", out_file
+                  ]
                   subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+                  
                   if os.path.exists(out_file):
                       caption = f"✂️ المقطع {idx+1}\nمن {start_str} إلى {end_str}"
-                      await bot.send_file(chat_id, out_file, caption=caption, voice=True)
+                      await client.send_file(CHAT_ID, out_file, caption=caption, voice=True)
                       os.remove(out_file)
+                      
+              if os.path.exists(input_file):
+                  os.remove(input_file)
+                  
+              await client.disconnect()
 
-              if os.path.exists(input_file): os.remove(input_file)
-              await prog_msg.delete()
-              user_states.pop(chat_id, None)
-
-          print("Bot is running...")
-          bot.start(bot_token=BOT_TOKEN)
-          bot.run_until_disconnected()
+          asyncio.run(main())
